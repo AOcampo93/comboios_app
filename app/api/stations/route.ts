@@ -1,11 +1,12 @@
+import { fetchUpstream } from "@/lib/upstream";
+
 export const dynamic = "force-static";
 export const revalidate = 300;
 
 export async function GET(request: Request) {
-    const res = await fetch(`${process.env.WORKER_BASE_URL}/stations`, {
-        headers: {
-            Authorization: `Bearer ${process.env.WORKER_KEY}`,
-        },
+    const res = await fetchUpstream({
+        workerPath: "/stations",
+        publicPath: "/stations",
     });
     const json = await res.json();
     return Response.json(json);

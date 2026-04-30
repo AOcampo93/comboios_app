@@ -15,6 +15,15 @@
             "cancelled": "Suprimido",
             "completed": "Viagem terminada"
         },
+        "stops": {
+            "next": "Próxima",
+            "current": "Agora",
+            "loading": "A carregar paragens…",
+            "physics_eta": "Baseado em GPS"
+        },
+        "dwell": {
+            "scheduled": "previsto"
+        },
         "updated_at": "Atualizado às"
     },
     "station_popup": {
@@ -35,5 +44,10 @@
         "second": "segundo",
         "seconds": "segundos",
         "and": "e"
+    },
+    "reliability": {
+        "accumulating": "em {{days}}d",
+        "accumulating_tooltip": "Pontuação de fiabilidade disponível após {{days}} dias adicionais de histórico.",
+        "tooltip": "{{samples}} observações em {{days}} dias"
     }
 }

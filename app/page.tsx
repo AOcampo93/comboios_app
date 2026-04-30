@@ -12,15 +12,16 @@ import { LineString, MultiLineString, Feature, Point } from "geojson";
 //     return lines;
 // }
 
-// function getCalculatedHeading(
-//     previousCoordinates: number[],
-//     currentCoordinates: number[]
-// ): number {
-//     return turf.bearing(
-//         turf.point(currentCoordinates),
-//         turf.point(previousCoordinates)
-//     );
-// }
+function getCalculatedHeading(
+    previousCoordinates: number[],
+    currentCoordinates: number[]
+): number {
+    const bearing = turf.bearing(
+        turf.point(previousCoordinates),
+        turf.point(currentCoordinates)
+    );
+    return (bearing + 360) % 360;
+}
 
 // function getPopupAnchorForHeading(heading: number): PositionAnchor {
 //     if (heading >= 45 && heading < 135) {
@@ -92,9 +93,20 @@ import {
     EnrichedVehicle,
     GeneralStatistics,
     TrainArrival,
+    Trip,
 } from "@/types/cp-v2";
+import TrainStopsList from "@/components/TrainStopsList/TrainStopsList";
+import StationDwellTimer from "@/components/StationDwellTimer/StationDwellTimer";
+import VehicleBottomSheet from "@/components/VehicleBottomSheet/VehicleBottomSheet";
+import ReliabilityBadge from "@/components/ReliabilityBadge/ReliabilityBadge";
+import { useIsMobile } from "@/utils/useIsMobile";
 import SearchOverlay from "@/components/search/SearchBarOverlay/SearchBarOverlay";
-import { formatDuration, parseHHMM } from "@/utils/time";
+import {
+    formatDuration,
+    parseHHMM,
+    scheduledDwellSeconds,
+} from "@/utils/time";
+import { computePhysicsETA, type PhysicsETA } from "@/utils/eta";
 import { Train, TrainIcon } from "lucide-react";
 import { getFormattedFleetNumber } from "@/utils/fleet";
 import { useTranslation } from "react-i18next";
@@ -246,6 +258,32 @@ function Home() {
         _setVehicles(data);
     };
 
+    const prevPositionsRef = useRef<Map<number, [number, number]>>(new Map());
+    // Anchored delay per train: only updated when |new - anchor| > DELAY_TREND_THRESHOLD,
+    // so small jitter doesn't flicker the arrow and a slow climb still triggers "up".
+    const prevDelaysRef = useRef<Map<number, number>>(new Map());
+
+    // First-seen-at-station timestamps; persisted to sessionStorage so a refresh
+    // doesn't reset the dwell counter while a train is still parked.
+    const ARRIVAL_KEY = "comboios:arrivalTimestamps";
+    const arrivalTimestampsRef = useRef<Map<number, number>>(new Map());
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const raw = window.sessionStorage.getItem(ARRIVAL_KEY);
+        if (!raw) return;
+        try {
+            const obj = JSON.parse(raw) as Record<string, number>;
+            const map = new Map<number, number>();
+            for (const [k, v] of Object.entries(obj)) {
+                map.set(Number(k), v);
+            }
+            arrivalTimestampsRef.current = map;
+        } catch {
+            // ignore corrupt sessionStorage
+        }
+    }, []);
+
     const { data: newVehicles } = useSWR<{
         vehicles: EnrichedVehicle[];
     }>("/api/vehicles", unauthenticatedFetcher, {
@@ -264,31 +302,130 @@ function Home() {
         refreshInterval: 60_000,
     });
 
+    const { data: selectedTrip } = useSWR<Trip>(
+        selectedVehicle
+            ? `/api/trips/${selectedVehicle.trainNumber}`
+            : null,
+        unauthenticatedFetcher,
+        { refreshInterval: 30_000 },
+    );
+
+    const isMobile = useIsMobile();
+
+    const arrivedAtSelected = selectedVehicle
+        ? arrivalTimestampsRef.current.get(selectedVehicle.trainNumber)
+        : undefined;
+
+    const physicsEtaSelected: PhysicsETA | null = (() => {
+        if (!selectedVehicle || !selectedTrip) return null;
+        const lon = parseFloat(selectedVehicle.longitude);
+        const lat = parseFloat(selectedVehicle.latitude);
+        const speed = selectedVehicle.speed;
+        const nextCode = selectedVehicle.gtfs?.stopId?.replace("_", "-");
+        if (
+            !nextCode ||
+            speed == null ||
+            Number.isNaN(lon) ||
+            Number.isNaN(lat)
+        ) {
+            return null;
+        }
+        const cpEta =
+            selectedTrip.trainStops.find((s) => s.station.code === nextCode)
+                ?.ETA ?? null;
+        return computePhysicsETA(
+            selectedTrip,
+            nextCode,
+            lon,
+            lat,
+            speed,
+            cpEta,
+        );
+    })();
+
     useEffect(() => {
         console.log(isLoading);
         if (newVehicles?.vehicles) {
             isLoading && setIsLoading(false);
 
-            // setVehicles(
-            //     newVehicles.vehicles.filter((v) => {
-            //         const completedAtHour = parseInt(
-            //             v.trainStops[v.trainStops.length - 1].eta.split(":")[1]
-            //         );
-            //         const currentHour = new Date().getHours();
+            const DELAY_TREND_THRESHOLD = 30; // seconds
+            const prevPositions = prevPositionsRef.current;
+            const prevDelays = prevDelaysRef.current;
+            const arrivalTimestamps = arrivalTimestampsRef.current;
+            const currentTrainNumbers = new Set<number>();
+            const nowMs = Date.now();
 
-            //         // lazy calculation but meh
-            //         const completedHoursAgo = Math.abs(
-            //             completedAtHour - currentHour
-            //         );
+            const enriched = newVehicles.vehicles.map((v) => {
+                currentTrainNumbers.add(v.trainNumber);
 
-            //         return (
-            //             v.status !== VehicleStatus.Cancelled &&
-            //             v.status !== VehicleStatus.Completed &&
-            //             completedHoursAgo > 2
-            //         );
-            //     })
-            // );
-            setVehicles(newVehicles.vehicles);
+                const lon = parseFloat(v.longitude);
+                const lat = parseFloat(v.latitude);
+                let heading = v.heading;
+                if (!Number.isNaN(lon) && !Number.isNaN(lat)) {
+                    const prev = prevPositions.get(v.trainNumber);
+                    if (prev && (prev[0] !== lon || prev[1] !== lat)) {
+                        heading = getCalculatedHeading(prev, [lon, lat]);
+                    }
+                    prevPositions.set(v.trainNumber, [lon, lat]);
+                }
+
+                let delayTrend: "up" | "down" | "flat" | undefined;
+                const anchor = prevDelays.get(v.trainNumber);
+                if (anchor === undefined) {
+                    prevDelays.set(v.trainNumber, v.delay);
+                } else {
+                    const diff = v.delay - anchor;
+                    if (Math.abs(diff) <= DELAY_TREND_THRESHOLD) {
+                        delayTrend = "flat";
+                    } else if (diff > 0) {
+                        delayTrend = "up";
+                        prevDelays.set(v.trainNumber, v.delay);
+                    } else {
+                        delayTrend = "down";
+                        prevDelays.set(v.trainNumber, v.delay);
+                    }
+                }
+
+                if (
+                    v.status === VehicleStatus.AtStation ||
+                    v.status === VehicleStatus.AtOrigin
+                ) {
+                    if (!arrivalTimestamps.has(v.trainNumber)) {
+                        arrivalTimestamps.set(v.trainNumber, nowMs);
+                    }
+                } else if (arrivalTimestamps.has(v.trainNumber)) {
+                    arrivalTimestamps.delete(v.trainNumber);
+                }
+
+                return { ...v, heading, delayTrend };
+            });
+
+            prevPositions.forEach((_, tn) => {
+                if (!currentTrainNumbers.has(tn)) prevPositions.delete(tn);
+            });
+            prevDelays.forEach((_, tn) => {
+                if (!currentTrainNumbers.has(tn)) prevDelays.delete(tn);
+            });
+            arrivalTimestamps.forEach((_, tn) => {
+                if (!currentTrainNumbers.has(tn)) arrivalTimestamps.delete(tn);
+            });
+
+            if (typeof window !== "undefined") {
+                const obj: Record<string, number> = {};
+                arrivalTimestamps.forEach((v, k) => {
+                    obj[String(k)] = v;
+                });
+                try {
+                    window.sessionStorage.setItem(
+                        ARRIVAL_KEY,
+                        JSON.stringify(obj),
+                    );
+                } catch {
+                    // sessionStorage may be full/disabled; non-fatal
+                }
+            }
+
+            setVehicles(enriched);
         }
     }, [newVehicles]);
 
@@ -551,32 +688,7 @@ function Home() {
         setShowSearchOverlay(false);
     };
 
-    // const vehiclesLayerStyle: SymbolLayer = {
-    //     source: "vehicles",
-    //     id: "vehicle",
-    //     type: "symbol",
-    //     layout: {
-    //         "icon-image": "bus",
-    //         "icon-allow-overlap": true,
-    //         "icon-ignore-placement": true,
-    //         "icon-anchor": "center",
-    //         "symbol-placement": "point",
-    //         "icon-rotation-alignment": "map",
-    //         "icon-size": [
-    //             "interpolate",
-    //             ["linear"],
-    //             ["zoom"],
-    //             10,
-    //             0.1,
-    //             20,
-    //             0.4,
-    //         ],
-    //         "icon-offset": [0, 0],
-    //         "icon-rotate": ["get", "heading"],
-    //     },
-    // };
-
-    const vehiclesLayerStyle: CircleLayer = {
+    const vehiclesStatusLayerStyle: CircleLayer = {
         source: "vehicles",
         id: "vehicle",
         type: "circle",
@@ -592,6 +704,36 @@ function Home() {
             "circle-radius": 5,
             "circle-stroke-width": 2,
             "circle-stroke-color": "#ffffff",
+        },
+    };
+
+    const vehiclesIconLayerStyle: SymbolLayer = {
+        source: "vehicles",
+        id: "vehicle-icon",
+        type: "symbol",
+        // Only render icons for active, moving trains (CANCELLED/COMPLETED stay as plain dots)
+        filter: [
+            "all",
+            ["!=", ["get", "status"], "CANCELLED"],
+            ["!=", ["get", "status"], "COMPLETED"],
+            ["has", "heading"],
+        ],
+        layout: {
+            "icon-image": "bus",
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+            "icon-anchor": "center",
+            "icon-rotation-alignment": "map",
+            "icon-size": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                10,
+                0.1,
+                20,
+                0.4,
+            ],
+            "icon-rotate": ["get", "heading"],
         },
     };
 
@@ -924,10 +1066,11 @@ function Home() {
                     data={vehiclesGeoJSON}
                     attribution="Informação em tempo real proveniente de CP – Comboios de Portugal, E. P. E."
                 >
-                    <Layer {...vehiclesLayerStyle}></Layer>
+                    <Layer {...vehiclesStatusLayerStyle}></Layer>
+                    <Layer {...vehiclesIconLayerStyle}></Layer>
                 </Source>
 
-                {showPopup && selectedVehicle && (
+                {showPopup && selectedVehicle && !isMobile && (
                     <Popup
                         longitude={parseFloat(selectedVehicle.longitude)}
                         latitude={parseFloat(selectedVehicle.latitude)}
@@ -941,16 +1084,28 @@ function Home() {
                         closeOnClick={false}
                     >
                         <div className="flex items-start absolute top-[12.5px] left-[12.5px] justify-between w-[290px]">
-                            <h1
+                            <div
                                 style={{
-                                    fontWeight: "900",
-                                    fontSize: "1.1rem",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 8,
                                 }}
                             >
-                                {t("vehicle_popup.train", {
-                                    trainNumber: selectedVehicle?.trainNumber,
-                                })}
-                            </h1>
+                                <h1
+                                    style={{
+                                        fontWeight: "900",
+                                        fontSize: "1.1rem",
+                                    }}
+                                >
+                                    {t("vehicle_popup.train", {
+                                        trainNumber:
+                                            selectedVehicle?.trainNumber,
+                                    })}
+                                </h1>
+                                <ReliabilityBadge
+                                    trainNumber={selectedVehicle.trainNumber}
+                                />
+                            </div>
 
                             {selectedVehicle?.units &&
                                 selectedVehicle?.units.length > 0 && (
@@ -971,60 +1126,52 @@ function Home() {
                                 )}
                         </div>
 
-                        {selectedVehicle.delay == 0 && (
-                            <p
-                                style={{
-                                    position: "absolute",
-                                    top: "30.5px",
-                                    left: "12.5px",
-                                    fontWeight: "700",
-                                    fontSize: "0.8rem",
-                                    color: "gray",
-                                }}
-                            >
-                                {t("vehicle_popup.schedule_adherence.on_time")}
-                            </p>
-                        )}
-
-                        {selectedVehicle.delay > 0 && (
-                            <p
-                                style={{
-                                    position: "absolute",
-                                    top: "30.5px",
-                                    left: "12.5px",
-                                    fontWeight: "700",
-                                    fontSize: "0.8rem",
-                                    color: "gray",
-                                }}
-                            >
-                                {t("vehicle_popup.schedule_adherence.late", {
-                                    formattedDuration: formatDuration(
-                                        selectedVehicle.delay,
-                                        true,
-                                    ),
-                                })}
-                            </p>
-                        )}
-
-                        {selectedVehicle.delay < 0 && (
-                            <p
-                                style={{
-                                    position: "absolute",
-                                    top: "30.5px",
-                                    left: "12.5px",
-                                    fontWeight: "700",
-                                    fontSize: "0.8rem",
-                                    color: "gray",
-                                }}
-                            >
-                                {t("vehicle_popup.schedule_adherence.early", {
-                                    formattedDuration: formatDuration(
-                                        Math.abs(selectedVehicle.delay),
-                                        true,
-                                    ),
-                                })}
-                            </p>
-                        )}
+                        <p
+                            style={{
+                                position: "absolute",
+                                top: "30.5px",
+                                left: "12.5px",
+                                fontWeight: "700",
+                                fontSize: "0.8rem",
+                                color: "gray",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 4,
+                            }}
+                        >
+                            {selectedVehicle.delayTrend === "up" && (
+                                <ArrowUp
+                                    size={12}
+                                    weight="bold"
+                                    color="#d7263d"
+                                />
+                            )}
+                            {selectedVehicle.delayTrend === "down" && (
+                                <ArrowDown
+                                    size={12}
+                                    weight="bold"
+                                    color="#388344"
+                                />
+                            )}
+                            <span>
+                                {selectedVehicle.delay === 0 &&
+                                    t("vehicle_popup.schedule_adherence.on_time")}
+                                {selectedVehicle.delay > 0 &&
+                                    t("vehicle_popup.schedule_adherence.late", {
+                                        formattedDuration: formatDuration(
+                                            selectedVehicle.delay,
+                                            true,
+                                        ),
+                                    })}
+                                {selectedVehicle.delay < 0 &&
+                                    t("vehicle_popup.schedule_adherence.early", {
+                                        formattedDuration: formatDuration(
+                                            Math.abs(selectedVehicle.delay),
+                                            true,
+                                        ),
+                                    })}
+                            </span>
+                        </p>
 
                         {!!selectedVehicle.occupancy && (
                             <p
@@ -1211,7 +1358,9 @@ function Home() {
                             </>
                         )}
 
-                        {selectedVehicle.status === VehicleStatus.AtOrigin && (
+                        {(selectedVehicle.status === VehicleStatus.AtOrigin ||
+                            selectedVehicle.status ===
+                                VehicleStatus.AtStation) && (
                             <>
                                 <div style={{ height: "5px" }}></div>
 
@@ -1229,7 +1378,10 @@ function Home() {
                                             textTransform: "uppercase",
                                         }}
                                     >
-                                        {t("vehicle_popup.status.at_origin")}
+                                        {selectedVehicle.status ===
+                                        VehicleStatus.AtOrigin
+                                            ? t("vehicle_popup.status.at_origin")
+                                            : t("vehicle_popup.status.at_station")}
                                         {(() => {
                                             const station =
                                                 stations?.stations?.find(
@@ -1244,42 +1396,36 @@ function Home() {
                                         })()}
                                     </p>
                                 </div>
-                            </>
-                        )}
 
-                        {selectedVehicle.status === VehicleStatus.AtStation && (
-                            <>
-                                <div style={{ height: "5px" }}></div>
-
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    <p
-                                        style={{
-                                            color: "gray",
-                                            fontSize: "0.8rem",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                        }}
-                                    >
-                                        {t("vehicle_popup.status.at_station")}
-                                        {(() => {
-                                            const station =
-                                                stations?.stations?.find(
-                                                    (s) =>
-                                                        s.code ===
-                                                        selectedVehicle.lastStation,
-                                                )?.designation;
-
-                                            return station
-                                                ? ` (${station})`
-                                                : "";
-                                        })()}
-                                    </p>
-                                </div>
+                                {(() => {
+                                    const arrivedAt =
+                                        arrivalTimestampsRef.current.get(
+                                            selectedVehicle.trainNumber,
+                                        );
+                                    if (!arrivedAt) return null;
+                                    const stop = selectedTrip?.trainStops.find(
+                                        (s) =>
+                                            s.station.code ===
+                                            selectedVehicle.lastStation,
+                                    );
+                                    return (
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                justifyContent: "center",
+                                                marginTop: 4,
+                                            }}
+                                        >
+                                            <StationDwellTimer
+                                                arrivedAt={arrivedAt}
+                                                scheduledDwellSeconds={scheduledDwellSeconds(
+                                                    stop?.arrival ?? null,
+                                                    stop?.departure ?? null,
+                                                )}
+                                            />
+                                        </div>
+                                    );
+                                })()}
                             </>
                         )}
 
@@ -1348,6 +1494,25 @@ function Home() {
                             </>
                         )}
 
+                        <div
+                            style={{
+                                width: 320,
+                                maxHeight: 240,
+                                overflowY: "auto",
+                                marginTop: 8,
+                                paddingRight: 4,
+                            }}
+                        >
+                            <TrainStopsList
+                                trip={selectedTrip}
+                                nextStopCode={
+                                    selectedVehicle.gtfs?.stopId ?? undefined
+                                }
+                                status={selectedVehicle.status}
+                                physicsEta={physicsEtaSelected}
+                            />
+                        </div>
+
                         <div style={{ height: "20px" }}></div>
 
                         <div>
@@ -1381,6 +1546,17 @@ function Home() {
                             )}
                         </div>
                     </Popup>
+                )}
+                {isMobile && (
+                    <VehicleBottomSheet
+                        vehicle={
+                            showPopup && selectedVehicle ? selectedVehicle : null
+                        }
+                        trip={selectedTrip}
+                        physicsEta={physicsEtaSelected}
+                        arrivedAt={arrivedAtSelected}
+                        onClose={handlePopupClose}
+                    />
                 )}
                 {showStationPopup && selectedStation && (
                     <Popup

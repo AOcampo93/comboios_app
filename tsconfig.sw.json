@@ -1,0 +1,9 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "lib": ["webworker", "esnext", "dom.iterable"],
+        "types": ["@serwist/next/typings"]
+    },
+    "include": ["app/sw.ts"],
+    "exclude": []
+}

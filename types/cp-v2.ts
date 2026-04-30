@@ -20,6 +20,11 @@ export interface Vehicle {
     timestamp?: string;
     hasDisruptions: null;
     units?: string[];
+
+    // calculated client-side from successive position polls
+    heading?: number;
+    // calculated client-side: up = delay grew, down = delay shrank, flat = stable
+    delayTrend?: "up" | "down" | "flat";
 }
 
 export interface EnrichedVehicle extends Vehicle {
@@ -88,4 +93,32 @@ export interface TrainArrival {
     // realtime values
     ETA: number;
     ETD: number;
+}
+
+export interface TripStop {
+    station: GenericEntity;
+    arrival: string | null;     // scheduled "HH:MM" or null at the origin
+    departure: string | null;   // scheduled "HH:MM" or null at the terminal
+    platform: string | null;
+    latitude: string;
+    longitude: string;
+    delay: number;              // per-stop delay in seconds
+    supression: GenericEntity | null;
+    ETA: string | null;         // realtime "HH:MM" (programmed + delay)
+    ETD: string | null;
+}
+
+export interface Trip {
+    trainNumber: number;
+    serviceCode: GenericEntity;
+    lastStationCode: string;
+    delay: number;
+    occupancy: number | null;
+    latitude: string | null;
+    longitude: string | null;
+    status: string;
+    hasDisruptions: boolean | null;
+    duration: string;
+    messages: unknown[];
+    trainStops: TripStop[];
 }

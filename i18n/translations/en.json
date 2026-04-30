@@ -15,6 +15,15 @@
             "cancelled": "Cancelled",
             "completed": "Trip completed"
         },
+        "stops": {
+            "next": "Next",
+            "current": "Now",
+            "loading": "Loading stops…",
+            "physics_eta": "GPS-based"
+        },
+        "dwell": {
+            "scheduled": "scheduled"
+        },
         "updated_at": "Updated at"
     },
     "station_popup": {
@@ -35,5 +44,10 @@
         "second": "second",
         "seconds": "seconds",
         "and": "and"
+    },
+    "reliability": {
+        "accumulating": "in {{days}}d",
+        "accumulating_tooltip": "Reliability score available after {{days}} more days of historical data.",
+        "tooltip": "{{samples}} observations across {{days}} days"
     }
 }

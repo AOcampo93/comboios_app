@@ -1,15 +1,14 @@
+import { fetchUpstream } from "@/lib/upstream";
+
 export const dynamic = "force-static";
 export const revalidate = 7;
 
 export async function GET(request: Request) {
-    const res = await fetch(
-        `${process.env.WORKER_BASE_URL}?excludes=completed`,
-        {
-            headers: {
-                Authorization: `Bearer ${process.env.WORKER_KEY}`,
-            },
-        }
-    );
+    const res = await fetchUpstream({
+        workerPath: "",
+        publicPath: "/vehicles",
+        query: "excludes=completed",
+    });
     const json = await res.json();
     return Response.json(json);
 }

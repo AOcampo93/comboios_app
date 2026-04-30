@@ -52,3 +52,18 @@ export function parseHHMM(
     date.setHours(hours, minutes, 0, 0);
     return date;
 }
+
+export function scheduledDwellSeconds(
+    arrivalHHMM: string | null,
+    departureHHMM: string | null,
+): number | null {
+    if (!arrivalHHMM || !departureHHMM) return null;
+    const arr = arrivalHHMM.match(/^(\d{1,2}):(\d{2})$/);
+    const dep = departureHHMM.match(/^(\d{1,2}):(\d{2})$/);
+    if (!arr || !dep) return null;
+    const arrMin = parseInt(arr[1], 10) * 60 + parseInt(arr[2], 10);
+    const depMin = parseInt(dep[1], 10) * 60 + parseInt(dep[2], 10);
+    let diff = (depMin - arrMin) * 60;
+    if (diff < 0) diff += 24 * 3600; // wraparound past midnight
+    return diff;
+}

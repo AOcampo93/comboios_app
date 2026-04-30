@@ -1,17 +1,15 @@
+import { fetchUpstream } from "@/lib/upstream";
+
 export const revalidate = 0;
 
 export async function GET(
     request: Request,
     { params }: { params: { tripNumber: string } },
 ) {
-    const res = await fetch(
-        `${process.env.WORKER_BASE_URL}/trips/${params.tripNumber}`,
-        {
-            headers: {
-                Authorization: `Bearer ${process.env.WORKER_KEY}`,
-            },
-        },
-    );
+    const res = await fetchUpstream({
+        workerPath: `/trips/${params.tripNumber}`,
+        publicPath: `/trips/${params.tripNumber}`,
+    });
     const json = await res.json();
     return Response.json(json);
 }

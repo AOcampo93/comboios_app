@@ -1,12 +1,27 @@
-# CLAUDE.md — comboios_app (frontend)
+# CLAUDE.md
 
-Read this first when resuming work on this repo.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this repo is
 
-Fork of [joaodcp/cp-rt-ui](https://github.com/joaodcp/cp-rt-ui). Live train
-tracker for Portuguese rail. Stack: Next.js 14, MapLibre, SWR, Tailwind, vaul,
-Serwist, optional pg.
+Fork of [joaodcp/cp-rt-ui](https://github.com/joaodcp/cp-rt-ui) — a live train
+tracker for Portuguese rail (CP). Next.js 14 (App Router) + TypeScript + React 18,
+MapLibre via `react-map-gl/maplibre`, SWR, Tailwind (shadcn-style components),
+vaul for the mobile sheet, Serwist for the PWA, optional `pg` for history.
+
+## Commands
+
+```bash
+npm run dev      # next dev with hot reload — http://localhost:3000
+npm run build    # production build; also generates public/sw.js via Serwist
+npm run start    # serve the production build
+npm run lint     # eslint (next lint)
+
+npx tsc --noEmit                       # typecheck the main project
+npx tsc --noEmit -p tsconfig.sw.json   # typecheck just the service worker
+```
+
+There is no test suite. Validation is manual — see "Validating work locally".
 
 ## The two-backend architecture
 
@@ -15,74 +30,138 @@ Serwist, optional pg.
                                                           no key needed (fallback
                                                           via lib/upstream.ts)
 
-                  ←──  [Backend B: Postgres in repo
+                  ←──  [Backend B: Postgres from repo
                         comboios_scrapper]                history; only used by
                                                           /api/{history,reliability,stats}/*
                                                           when DATABASE_URL is set
 ```
 
-The frontend works STANDALONE (no Backend B). Setting `DATABASE_URL` unlocks
-the historical features. Without it, those endpoints return 404 cleanly and
-the `ReliabilityBadge` falls back to a "in Nd" placeholder.
+The frontend works STANDALONE (no Backend B). Setting `DATABASE_URL` unlocks the
+historical features. Without it those endpoints return 404 cleanly and
+`ReliabilityBadge` falls back to an "in Nd" placeholder.
 
-## What's done
+- **Backend A** — `lib/upstream.ts`. In production (Joao's deploy) `WORKER_BASE_URL`
+  + `WORKER_KEY` route to a private Cloudflare Worker with bearer auth. Without
+  those env vars (local dev / forks) it hits the public `comboios.live/api` proxy
+  — same data, +1 hop, upstream-cached. The `app/api/{vehicles,stations,stats,
+  trips,version}` routes are thin pass-throughs over `fetchUpstream`.
+- **Backend B** — `lib/historyDb.ts`. Lazily builds a `pg.Pool` only if
+  `DATABASE_URL` is set; `isHistoryConfigured()` gates the history endpoints.
+  Pool errors are caught so transient DB issues never crash the Next server.
 
-| Task | Notes |
-|------|-------|
-| F1.1 Heading | turf.bearing in `app/page.tsx` poll useEffect, icon-rotate on SymbolLayer |
-| F1.2 ETA por parada | `components/TrainStopsList`, fetches `/api/trips/[n]` via SWR |
-| F1.3 Trend del retraso | `prevDelaysRef` + 30s threshold, ArrowUp/ArrowDown in popup + sheet |
-| F1.4 ETA físico | `utils/eta.ts` projects against route line built from trip stops |
-| F1.5 Contador en estación | `arrivalTimestampsRef` + `components/StationDwellTimer`, persisted to sessionStorage |
-| F2.1 Manifest PWA | `app/manifest.ts`; icons in `public/icons/` are placeholders |
-| F2.2 Service worker | Serwist via `next.config.mjs`, sw.ts isolated to `tsconfig.sw.json` |
-| F2.3 Mobile bottom sheet | `components/VehicleBottomSheet` using vaul, 3 snap points |
-| F2.4 Scaffolding histórico | `ReliabilityBadge` + `useReliability` hook with placeholder state |
-| F3.6 Endpoints API | `/api/reliability/train/[n]`, `/api/history/train/[n]`, `/api/stats/line/[c]` (last is stub) |
+## Frontend data flow
 
-## What's pending
+`app/page.tsx` is the single client component holding all map state. It:
 
-- **F4.1**: enrich `ReliabilityBadge` tooltip with day-of-week breakdown ("Punctual the X% of [today]"). Needs an extension to the endpoint to return per-DoW stats, or a separate endpoint.
-- **F4.2**: score by line. Needs CP GTFS routes ingested to know which trains map to which line.
-- **F4.3**: prediction ajustada. Apply historical delta to the displayed ETA when there's signal. Needs the endpoint to expose mean delta per (train, segment, hour, day-of-week).
-- **F5.1**: speed heatmap. Build a GeoJSON endpoint that returns colored line segments by avg speed; layer on map.
-- **F5.2**: dwell heatmap. Color station markers by avg dwell time / excess.
-- **F6.1**: PR to joaodcp once 30 days of real data accumulate.
-- **F6.2**: handoff package: DB dump + schema docs.
+- Polls `/api/vehicles`, `/api/stations`, `/api/stats` via SWR on intervals,
+  and `/api/trips/[n]` when a train is selected.
+- Derives client-only fields not present in the API: `heading` (turf.bearing
+  between consecutive polls) and `delayTrend` (delta vs `prevDelaysRef`, with a
+  30s threshold to filter noise). Both are added to the `Vehicle` type in
+  `types/cp-v2.ts`.
+- Renders vehicles/stations/routes as MapLibre `Source`/`Layer`s; the vehicle
+  icon is a `SymbolLayer` rotated by `heading`.
+- Selecting a train or station opens one shared `components/DetailPanel`: a
+  desktop side panel that slides in from the right (retractable to an edge tab)
+  or, on mobile, a vaul bottom sheet (3 snap points). `DetailPanel` picks the
+  layout via `utils/useIsMobile.ts`; `VehicleDetailContent` /
+  `StationDetailContent` render the body. Only ever one panel — selecting
+  another entity swaps its content. Train and station selection are mutually
+  exclusive (`onVehicleSelected` / `onStationSelected` clear each other).
+
+Supporting modules: `utils/eta.ts` (physical ETA by projecting position+speed
+onto the route line — `turf.nearestPointOnLine` + `turf.lineSlice`),
+`utils/fleet.ts`, `utils/stations.ts`, `utils/time.ts`. History UI lives in
+`components/ReliabilityBadge` driven by the `hooks/useReliability.ts` hook.
+i18n is i18next (`i18n/`, `en.json`/`pt.json`), browser language-detected.
 
 ## Conventions / gotchas
 
-- **`app/sw.ts` is excluded from main tsconfig.** It uses WebWorker types via `tsconfig.sw.json`. Don't add the file back to the main include or DOM types break.
-- **Heading icon orientation**: `cp_vehicle_oriented_w_inv.png` (90×134) is used as the rotated icon. If trains appear sideways, the source PNG needs rotation OR add an offset to `icon-rotate` in `vehiclesIconLayerStyle`.
-- **Backend B endpoints return 404 (not 500) when DB unavailable.** This is intentional — `useReliability` treats 404 as "not yet" and shows the placeholder. Don't change that contract.
-- **Local dev defaults to comboios.live as live data source.** No private credentials needed. See `lib/upstream.ts`.
-- **`heading` and `delayTrend` are added client-side** to the Vehicle type in `types/cp-v2.ts`. They don't come from the API.
-- **PWA icons are placeholders** generated by sips from `cp_vehicle_oriented_w_inv.png` padded with `#0B6CF2`. Replace with branded artwork before launching publicly.
+- **`app/sw.ts` is excluded from the main tsconfig.** It uses WebWorker types via
+  `tsconfig.sw.json`. Don't add it back to the main `include` or DOM types break.
+  Serwist is `disable`d in development (see `next.config.mjs`) to avoid HMR
+  conflicts — the SW only builds/registers in production.
+- **Backend B endpoints return 404 (not 500) when the DB is unavailable.** This is
+  intentional — `useReliability` treats 404 as "not yet" and shows the placeholder.
+  Don't change that contract.
+- **Heading icon orientation**: `cp_vehicle_oriented_w_inv.png` (90×134) is the
+  rotated icon. If trains appear sideways, rotate the source PNG or add an offset
+  to `icon-rotate` in `vehiclesIconLayerStyle`. A second layer,
+  `vehiclesArrowLayerStyle` (SDF `arrow.png`), draws a direction-of-travel arrow
+  just ahead of the dot — both layers need `heading`, so they only appear once a
+  train has been observed moving between two polls.
+- **`heading` and `delayTrend` are added client-side**, not returned by the API.
+- **PWA icons in `public/icons/` are placeholders** (sips-generated, padded with
+  `#0B6CF2`). Replace with branded artwork before a public launch.
+- Path alias `@/*` maps to the repo root.
+
+## History endpoints (Backend B)
+
+All query Postgres via `lib/historyDb.ts` and 404 when the DB is unconfigured or
+the relevant tables aren't migrated:
+
+- `GET /api/reliability/train/[number]` — on-time score + `byDayOfWeek[]` + `line`
+- `GET /api/reliability/station/[code]` — station on-time %, distinct trains,
+  avg/p90 delay, and `recentArrivals[]` (scheduled vs real). `code` is the live
+  "94-NNNNN" station code. 404 below 5 observations.
+- `GET /api/predictions/train/[number]` — mean historical delay per (station, DoW)
+- `GET /api/heatmap/speed` — GeoJSON FeatureCollection of segments by avg speed
+- `GET /api/heatmap/dwell` — per-station avg dwell + excess-over-scheduled
+- `GET /api/stats/line/[code]` — line-level score (`code` = GTFS route_id)
+
+## History UI
+
+- **Network heatmap** — always-available top-bar toggle (`app/page.tsx`, state
+  `showRouteHeatmap`, `heatmapActive`). When on it draws the **whole** rail
+  network coloured by avg speed (`/api/heatmap/speed`, red→yellow→green) plus
+  every station as a red stop marker (`/api/heatmap/dwell`). Global by design —
+  no dependency on a selected train or on Backend A, so it can't be knocked out
+  by a comboios.live outage. (It was briefly per-train; reverted — too fragile.)
+  Speed-line geometry follows real OSM track curves (seeded via
+  `scripts/railGeometry.ts`, GPS-traced in production).
+- **Day-of-week reliability panel** — `components/ReliabilityPanel`, renders
+  `score.byDayOfWeek` as a 7-bar on-time chart. In the desktop popup + bottom
+  sheet. Uses `useReliability` (deduped with `ReliabilityBadge`).
+- **Adjusted-ETA hint** — `hooks/usePredictions.ts` + `TrainStopsList`. Shows the
+  mean historical delay for today's weekday next to each upcoming stop.
+- **Station punctuality panel** — `components/StationReliabilityPanel`, driven by
+  `hooks/useStationReliability.ts`. In the station detail panel, below the live "next
+  arrivals" list. Shows the station's on-time %, a plain-language verdict, and
+  recent arrivals with scheduled vs real time. Hidden when Backend B has no data.
+
+## The trips endpoint GTFS fallback
+
+`app/api/trips/[tripNumber]` is called with the **train number**. Backend A's
+realtime `/trips` upstream currently returns an empty `{occupancy:null}` for
+every train, so the route falls back to Backend B: it builds a `Trip` from the
+scraper's static GTFS (`gtfs_trips`/`gtfs_stop_times`/`gtfs_stops`) when the
+realtime trip is empty and `DATABASE_URL` is set. GTFS `stop_id` ("94_NNNNN") is
+converted to the live hyphen format ("94-NNNNN") so the heatmap/predictions
+joins match. The fallback object carries `source: "gtfs-schedule"`. Without
+Backend B, an empty trip still degrades gracefully (stops list shows "Loading").
+
+## Pending work
+
+Cancellation tracking is still absent, so `reliability.cancellationPercent` is
+hardcoded to 0. The GTFS fallback is schedule-only (no realtime ETA/delay) — if
+Backend A's `/trips` upstream is restored it takes precedence automatically.
 
 ## Validating work locally
 
 ```bash
-# 1. Start local Postgres (in scraper repo)
+# 1. Start local Postgres (in the scraper repo)
 cd ../comboios_scrapper && docker compose up postgres -d
 
 # 2. Apply migrations + load seed
 DATABASE_URL='postgres://postgres:postgres@localhost:5432/comboios' npm run seed
 
-# 3. Run frontend connected to it
+# 3. Run the frontend connected to it
 cd ../comboios_app
 DATABASE_URL='postgres://postgres:postgres@localhost:5432/comboios' npm run dev
 
-# 4. Test: open http://localhost:3000, click train 528 → green badge.
+# 4. Open http://localhost:3000, click a train → green ReliabilityBadge.
 #    Or curl: http://localhost:3000/api/reliability/train/528
 ```
 
-Last validated: 2026-05-01. Curl returned `samples: 240, onTimePercent: 98.33%, source: "dwell"`. Visual badge confirmed in popup of train 4401.
-
-## Useful commands
-
-```bash
-npm run dev               # next dev with hot reload
-npm run build             # production build (also generates public/sw.js via Serwist)
-npx tsc --noEmit          # typecheck main project
-npx tsc --noEmit -p tsconfig.sw.json   # typecheck just the service worker
-```
+Last validated 2026-05-01: curl returned `samples: 240, onTimePercent: 98.33%,
+source: "dwell"`; badge confirmed in the train 4401 popup.

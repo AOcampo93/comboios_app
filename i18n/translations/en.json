@@ -19,7 +19,8 @@
             "next": "Next",
             "current": "Now",
             "loading": "Loading stops…",
-            "physics_eta": "GPS-based"
+            "physics_eta": "GPS-based",
+            "historical": "usually {{delay}}"
         },
         "dwell": {
             "scheduled": "scheduled"
@@ -30,6 +31,15 @@
         "next_arrivals": "Next arrivals",
         "no_arrivals": "No upcoming arrivals",
         "station_header": "Station"
+    },
+    "station_reliability": {
+        "title": "Punctuality",
+        "on_time": "of trains on time",
+        "verdict_good": "Trains usually arrive on time here",
+        "verdict_mixed": "Trains here are often a little late",
+        "verdict_bad": "Trains here are frequently late",
+        "summary": "Avg delay {{avg}} · {{trains}} trains · {{samples}} arrivals · {{days}}d",
+        "recent_title": "Recent arrivals · scheduled → real"
     },
     "search": {
         "field_placeholder": "Search train, line, or station...",
@@ -48,6 +58,32 @@
     "reliability": {
         "accumulating": "in {{days}}d",
         "accumulating_tooltip": "Reliability score available after {{days}} more days of historical data.",
-        "tooltip": "{{samples}} observations across {{days}} days"
+        "tooltip": "{{samples}} observations across {{days}} days",
+        "byday_title": "On-time by weekday",
+        "byday_none": "No data",
+        "panel_avg": "Avg delay",
+        "panel_samples": "{{samples}} obs · {{days}}d",
+        "weekday": {
+            "0": "Sun",
+            "1": "Mon",
+            "2": "Tue",
+            "3": "Wed",
+            "4": "Thu",
+            "5": "Fri",
+            "6": "Sat"
+        }
+    },
+    "heatmap": {
+        "speed_legend": "Average speed (km/h)",
+        "dwell_legend": "Excess over scheduled stop",
+        "slow": "slow",
+        "fast": "fast",
+        "speed_fast": "Fast — over 80 km/h",
+        "speed_medium": "Medium — 45–80 km/h",
+        "speed_slow": "Slow — under 45 km/h",
+        "early": "early",
+        "late": "late",
+        "stop": "Stop",
+        "toggle": "Route history heatmap"
     }
 }

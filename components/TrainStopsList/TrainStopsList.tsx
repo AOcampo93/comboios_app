@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Trip, TripStop } from "@/types/cp-v2";
 import { VehicleStatus } from "@/types/cp";
 import type { PhysicsETA } from "@/utils/eta";
+import { usePredictions, type StationPrediction } from "@/hooks/usePredictions";
 
 type Marker = "past" | "current" | "next" | "future";
 
@@ -49,13 +50,22 @@ function formatDelayShort(seconds: number): string {
     return `${sign}${minutes}m`;
 }
 
+function formatSignedDelay(seconds: number): string {
+    const minutes = Math.round(seconds / 60);
+    if (minutes === 0) return "0m";
+    return `${minutes > 0 ? "+" : "−"}${Math.abs(minutes)}m`;
+}
+
 function StopRow({
     stop,
     marker,
+    prediction,
 }: {
     stop: TripStop;
     marker: Marker;
+    prediction?: StationPrediction;
 }) {
+    const { t } = useTranslation();
     // Show ETA for arrivals where there's a scheduled arrival; for the origin row
     // (no arrival) fall back to the departure ETD. Realtime values can be null —
     // in that case we just print the scheduled.
@@ -67,6 +77,19 @@ function StopRow({
         marker !== "past" &&
         marker !== "future";
     const delayLabel = formatDelayShort(stop.delay);
+
+    // Adjusted-ETA hint (F4.3): the mean historical delay at this stop for
+    // today's weekday. Only shown for stops still ahead, and only when it's
+    // material (≥ 1 min) — otherwise it's noise next to CP's realtime ETA.
+    const showHist =
+        prediction != null &&
+        marker !== "past" &&
+        Math.abs(prediction.avgDelaySeconds) >= 60;
+    const histLabel = showHist
+        ? t("vehicle_popup.stops.historical", {
+              delay: formatSignedDelay(prediction!.avgDelaySeconds),
+          })
+        : null;
 
     const opacity =
         marker === "past" ? 0.45 : marker === "future" ? 1 : 1;
@@ -105,16 +128,35 @@ function StopRow({
             <span style={{ fontVariantNumeric: "tabular-nums", color: "#666" }}>
                 {scheduled}
             </span>
-            <span
-                style={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                }}
-                title={stop.station.designation}
-            >
-                {stop.station.designation}
-            </span>
+            <div style={{ overflow: "hidden", minWidth: 0 }}>
+                <div
+                    style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                    }}
+                    title={stop.station.designation}
+                >
+                    {stop.station.designation}
+                </div>
+                {histLabel && (
+                    <div
+                        title={
+                            prediction
+                                ? `${prediction.samples} obs`
+                                : undefined
+                        }
+                        style={{
+                            fontSize: "0.62rem",
+                            fontWeight: 400,
+                            color: "#d97706",
+                            whiteSpace: "nowrap",
+                        }}
+                    >
+                        {histLabel}
+                    </div>
+                )}
+            </div>
             <span
                 style={{
                     fontVariantNumeric: "tabular-nums",
@@ -137,6 +179,9 @@ export default function TrainStopsList({
     physicsEta,
 }: TrainStopsListProps) {
     const { t } = useTranslation();
+    // Historical delay per stop for today's weekday (empty when Backend B has
+    // no data). Hook must run before the early return below.
+    const { byStationToday } = usePredictions(trip?.trainNumber);
 
     if (!trip || !trip.trainStops || trip.trainStops.length === 0) {
         return (
@@ -254,6 +299,7 @@ export default function TrainStopsList({
                         key={`${stop.station.code}-${i}`}
                         stop={stop}
                         marker={markers[i]}
+                        prediction={byStationToday.get(stop.station.code)}
                     />
                 ))}
             </div>

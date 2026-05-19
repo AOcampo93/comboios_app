@@ -19,7 +19,8 @@
             "next": "Próxima",
             "current": "Agora",
             "loading": "A carregar paragens…",
-            "physics_eta": "Baseado em GPS"
+            "physics_eta": "Baseado em GPS",
+            "historical": "habitual {{delay}}"
         },
         "dwell": {
             "scheduled": "previsto"
@@ -30,6 +31,15 @@
         "next_arrivals": "Próximos comboios",
         "no_arrivals": "Sem próximos comboios",
         "station_header": "Estação"
+    },
+    "station_reliability": {
+        "title": "Pontualidade",
+        "on_time": "dos comboios à hora",
+        "verdict_good": "Os comboios costumam chegar a horas aqui",
+        "verdict_mixed": "Os comboios aqui chegam muitas vezes um pouco atrasados",
+        "verdict_bad": "Os comboios aqui chegam frequentemente atrasados",
+        "summary": "Atraso médio {{avg}} · {{trains}} comboios · {{samples}} chegadas · {{days}}d",
+        "recent_title": "Chegadas recentes · previsto → real"
     },
     "search": {
         "field_placeholder": "Procurar comboio, linha ou estação...",
@@ -48,6 +58,32 @@
     "reliability": {
         "accumulating": "em {{days}}d",
         "accumulating_tooltip": "Pontuação de fiabilidade disponível após {{days}} dias adicionais de histórico.",
-        "tooltip": "{{samples}} observações em {{days}} dias"
+        "tooltip": "{{samples}} observações em {{days}} dias",
+        "byday_title": "Pontualidade por dia",
+        "byday_none": "Sem dados",
+        "panel_avg": "Atraso médio",
+        "panel_samples": "{{samples}} obs · {{days}}d",
+        "weekday": {
+            "0": "Dom",
+            "1": "Seg",
+            "2": "Ter",
+            "3": "Qua",
+            "4": "Qui",
+            "5": "Sex",
+            "6": "Sáb"
+        }
+    },
+    "heatmap": {
+        "speed_legend": "Velocidade média (km/h)",
+        "dwell_legend": "Excesso sobre a paragem prevista",
+        "slow": "lento",
+        "fast": "rápido",
+        "speed_fast": "Rápido — mais de 80 km/h",
+        "speed_medium": "Médio — 45–80 km/h",
+        "speed_slow": "Lento — menos de 45 km/h",
+        "early": "adiantado",
+        "late": "atrasado",
+        "stop": "Paragem",
+        "toggle": "Mapa de calor histórico da rota"
     }
 }

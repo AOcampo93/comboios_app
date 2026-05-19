@@ -14,6 +14,40 @@ interface ReliabilityRow {
     days_covered: string | null;
 }
 
+interface DowRow {
+    dow: number; // 0 = Sunday … 6 = Saturday (Postgres EXTRACT(DOW))
+    samples: string;
+    avg_delay: string | null;
+    on_time_pct: string | null;
+}
+
+interface LineRow {
+    route_id: string;
+    route_short_name: string | null;
+    trip_headsign: string | null;
+}
+
+/** Per-day-of-week query, parameterised over whichever table the score came from. */
+function dowQuery(source: "dwell" | "snapshots"): string {
+    const [table, tsCol, delayCol] =
+        source === "dwell"
+            ? ["station_dwell_events", "arrived_at", "delay_at_arrival_seconds"]
+            : ["train_snapshots", "ts", "delay_seconds"];
+    return `
+        SELECT
+            EXTRACT(DOW FROM ${tsCol})::int                                                   AS dow,
+            COUNT(*)::bigint                                                                  AS samples,
+            AVG(${delayCol})::int                                                             AS avg_delay,
+            (100.0 * SUM(CASE WHEN ${delayCol} <= $2 THEN 1 ELSE 0 END) / COUNT(*))::float    AS on_time_pct
+        FROM ${table}
+        WHERE train_number = $1
+          AND ${tsCol} > NOW() - INTERVAL '30 days'
+          AND ${delayCol} IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1
+    `;
+}
+
 export async function GET(
     _req: Request,
     { params }: { params: { number: string } },
@@ -84,6 +118,44 @@ export async function GET(
             return new Response(null, { status: 404 });
         }
 
+        // Day-of-week breakdown (F4.1), from the same source as the headline score.
+        const dowResult = await pool.query<DowRow>(dowQuery(source), [
+            trainNumber,
+            ON_TIME_THRESHOLD_SECONDS,
+        ]);
+        const byDayOfWeek = dowResult.rows.map((d) => ({
+            dayOfWeek: Number(d.dow),
+            samples: Number(d.samples),
+            avgDelaySeconds: Number(d.avg_delay ?? 0),
+            onTimePercent: Number(d.on_time_pct ?? 0),
+        }));
+
+        // Line this train belongs to, via the GTFS-derived map. Wrapped on its own
+        // because a deployment that hasn't run the GTFS migration won't have the
+        // table — the rest of the score should still work in that case.
+        let line: {
+            routeId: string;
+            routeShortName: string | null;
+            headsign: string | null;
+        } | null = null;
+        try {
+            const lineResult = await pool.query<LineRow>(
+                `SELECT route_id, route_short_name, trip_headsign
+                 FROM train_line_map WHERE train_number = $1`,
+                [trainNumber],
+            );
+            const lr = lineResult.rows[0];
+            if (lr) {
+                line = {
+                    routeId: lr.route_id,
+                    routeShortName: lr.route_short_name,
+                    headsign: lr.trip_headsign,
+                };
+            }
+        } catch {
+            line = null; // train_line_map not present yet — non-fatal
+        }
+
         return Response.json({
             trainNumber,
             samples,
@@ -93,6 +165,8 @@ export async function GET(
             cancellationPercent: 0, // TODO: requires status='CANCELLED' tracking in aggregates
             daysCovered: Number(r.days_covered ?? 0),
             source,
+            byDayOfWeek,
+            line,
         });
     } catch (err) {
         console.error("[reliability] query failed", err);

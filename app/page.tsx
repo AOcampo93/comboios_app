@@ -2,7 +2,13 @@
 "use client";
 
 import * as turf from "@turf/turf";
-import { LineString, MultiLineString, Feature, Point } from "geojson";
+import {
+    LineString,
+    MultiLineString,
+    Feature,
+    Point,
+    FeatureCollection,
+} from "geojson";
 
 // function splitLineStringByClosestPoint(lineString: LineString, point: Point) {
 //     const closestPoint = turf.nearestPointOnLine(lineString, point);
@@ -52,11 +58,15 @@ import {
     PositionAnchor,
 } from "maplibre-gl";
 import useSWR from "swr";
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
-    ArrowDown,
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+    type CSSProperties,
+} from "react";
+import {
     ArrowRight,
-    ArrowUp,
     CaretRight,
     ChartBar,
     Eye,
@@ -68,7 +78,6 @@ import {
     MapPinSimple,
     Moon,
     Path,
-    Sparkle,
     Sun,
     Ticket,
 } from "@phosphor-icons/react";
@@ -95,20 +104,13 @@ import {
     TrainArrival,
     Trip,
 } from "@/types/cp-v2";
-import TrainStopsList from "@/components/TrainStopsList/TrainStopsList";
-import StationDwellTimer from "@/components/StationDwellTimer/StationDwellTimer";
-import VehicleBottomSheet from "@/components/VehicleBottomSheet/VehicleBottomSheet";
-import ReliabilityBadge from "@/components/ReliabilityBadge/ReliabilityBadge";
-import { useIsMobile } from "@/utils/useIsMobile";
+import DetailPanel from "@/components/DetailPanel/DetailPanel";
+import VehicleDetailContent from "@/components/DetailPanel/VehicleDetailContent";
+import StationDetailContent from "@/components/DetailPanel/StationDetailContent";
 import SearchOverlay from "@/components/search/SearchBarOverlay/SearchBarOverlay";
-import {
-    formatDuration,
-    parseHHMM,
-    scheduledDwellSeconds,
-} from "@/utils/time";
+import { parseHHMM } from "@/utils/time";
 import { computePhysicsETA, type PhysicsETA } from "@/utils/eta";
-import { Train, TrainIcon } from "lucide-react";
-import { getFormattedFleetNumber } from "@/utils/fleet";
+import { Train } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import dynamic from "next/dynamic";
 // import { BottomSheet } from "@/components/BottomSheet/BottomSheet";
@@ -188,6 +190,11 @@ function Home() {
 
     const [showSearchOverlay, setShowSearchOverlay] = useState<boolean>(false);
     const [showStatsOverlay, setShowStatsOverlay] = useState<boolean>(false);
+
+    // Per-train historical heatmap (F5): the selected train's route coloured by
+    // average speed + its stops coloured by dwell-excess. Off by default,
+    // toggled from the top bar while a train is selected.
+    const [showRouteHeatmap, setShowRouteHeatmap] = useState<boolean>(false);
 
     const [activeBottomSheetDetent, setActiveBottomSheetDetent] =
         useState<number>(0);
@@ -302,6 +309,30 @@ function Home() {
         refreshInterval: 60_000,
     });
 
+    // Network heatmap. Global — when toggled it shows the whole rail network
+    // coloured by speed plus every station, with no dependency on a selected
+    // train or on Backend A being reachable.
+    const heatmapActive = showRouteHeatmap;
+
+    // Fetched unconditionally: the network geometry is also used to draw the
+    // highlighted rail track outline when the heatmap toggle is OFF.
+    const { data: speedHeatmap } = useSWR<FeatureCollection>(
+        "/api/heatmap/speed",
+        unauthenticatedFetcher,
+        { refreshInterval: 300_000 },
+    );
+
+    const { data: dwellHeatmap } = useSWR<{
+        stations: {
+            stationCode: string;
+            avgDwellSeconds: number;
+            avgExcessSeconds: number | null;
+            samples: number;
+        }[];
+    }>(heatmapActive ? "/api/heatmap/dwell" : null, unauthenticatedFetcher, {
+        refreshInterval: 300_000,
+    });
+
     const { data: selectedTrip } = useSWR<Trip>(
         selectedVehicle
             ? `/api/trips/${selectedVehicle.trainNumber}`
@@ -309,8 +340,6 @@ function Home() {
         unauthenticatedFetcher,
         { refreshInterval: 30_000 },
     );
-
-    const isMobile = useIsMobile();
 
     const arrivedAtSelected = selectedVehicle
         ? arrivalTimestampsRef.current.get(selectedVehicle.trainNumber)
@@ -464,6 +493,45 @@ function Home() {
             })) || [],
     };
 
+    // Dwell heatmap (F5.2): every station with history, drawn as a red stop
+    // marker. Joins /api/heatmap/dwell aggregates onto the station coordinates
+    // from /api/stations.
+    const dwellByStation = new Map(
+        dwellHeatmap?.stations.map((s) => [s.stationCode, s]) ?? [],
+    );
+    const dwellHeatmapGeoJSON: FeatureCollection<Point> = {
+        type: "FeatureCollection",
+        features: (stations?.stations ?? []).flatMap((station) => {
+            const d = dwellByStation.get(station.code);
+            if (!d || !station.latitude || !station.longitude) return [];
+            return [
+                {
+                    type: "Feature" as const,
+                    geometry: {
+                        type: "Point" as const,
+                        coordinates: [
+                            parseFloat(station.longitude),
+                            parseFloat(station.latitude),
+                        ],
+                    },
+                    properties: {
+                        designation: station.designation,
+                        excessSeconds: d.avgExcessSeconds ?? 0,
+                        dwellSeconds: d.avgDwellSeconds,
+                        samples: d.samples,
+                    },
+                },
+            ];
+        }),
+    };
+
+    // Speed heatmap (F5.1): the whole rail network — every segment coloured by
+    // average speed. segment_paths geometry follows the real OSM track.
+    const speedHeatmapGeoJSON: FeatureCollection = speedHeatmap ?? {
+        type: "FeatureCollection",
+        features: [],
+    };
+
     const vehiclesGeoJSON: GeoJSON = {
         type: "FeatureCollection",
         features: [],
@@ -491,9 +559,12 @@ function Home() {
             if (!selectedStationNextArrivalsRef.current)
                 setIsLoadingArrivals(true);
             fetch("/api/stations/" + selectedStation.code + "/arrivals")
-                .then(
-                    (res) =>
-                        res.json() as Promise<{ arrivals: TrainArrival[] }>,
+                .then((res) =>
+                    res.ok
+                        ? (res.json() as Promise<{
+                              arrivals: TrainArrival[];
+                          }>)
+                        : { arrivals: [] as TrainArrival[] },
                 )
                 .then((data) => {
                     // const sortedArrivals = sortArrivals(data);
@@ -533,6 +604,11 @@ function Home() {
                         );
                     setSelectedStationNextArrivals(parsedArrivals);
                     setIsLoadingArrivals(false);
+                })
+                .catch((err) => {
+                    // Never let a failed arrivals fetch crash the app.
+                    console.error("arrivals fetch failed", err);
+                    setIsLoadingArrivals(false);
                 });
         }
     }
@@ -559,6 +635,9 @@ function Home() {
     }, [selectedStation, showStationPopup]);
 
     function onStationSelected(station: Station) {
+        // Only one entity occupies the panel at a time — drop any selected train.
+        setSelectedVehicle(null);
+        setShowPopup(false);
         setSelectedStationNextArrivals(null);
         console.log("SETTING STATION:", station);
         setSelectedStation(station);
@@ -570,6 +649,10 @@ function Home() {
     }
 
     function onVehicleSelected(vehicle: EnrichedVehicle) {
+        // Only one entity occupies the panel at a time — drop any selected station.
+        setSelectedStation(null);
+        setShowStationPopup(false);
+        setSelectedStationNextArrivals(null);
         console.log("SETTING VEHICLE:", vehicle);
         setSelectedVehicle(vehicle);
         console.log(selectedVehicle);
@@ -660,6 +743,12 @@ function Home() {
         setSelectedStationNextArrivals(null);
     };
 
+    // The single panel shows whichever entity is selected; closing clears both.
+    const handleDetailPanelClose = () => {
+        handlePopupClose();
+        handleStationPopupClose();
+    };
+
     const handleSearchVehicleSelect = (vehicle: EnrichedVehicle) => {
         onVehicleSelected(vehicle);
         map?.flyTo({
@@ -737,34 +826,68 @@ function Home() {
         },
     };
 
+    // Direction-of-travel arrow: a small SDF arrow sitting just ahead of the
+    // train dot, rotated to the heading derived from consecutive polls. Drawn
+    // on top so the way the train is going is always readable.
+    const vehiclesArrowLayerStyle: SymbolLayer = {
+        source: "vehicles",
+        id: "vehicle-arrow",
+        type: "symbol",
+        // Hidden when zoomed out — far away the dots and arrows blur together.
+        minzoom: 6,
+        filter: [
+            "all",
+            ["!=", ["get", "status"], "CANCELLED"],
+            ["!=", ["get", "status"], "COMPLETED"],
+            ["has", "heading"],
+        ],
+        layout: {
+            "icon-image": "arrow",
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+            "icon-anchor": "center",
+            "icon-rotation-alignment": "map",
+            "icon-rotate": ["get", "heading"],
+            "icon-size": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                8,
+                0.55,
+                16,
+                1.1,
+            ],
+            // Negative Y = ahead of the dot; the offset rotates with the icon.
+            "icon-offset": [0, -26],
+        },
+        paint: {
+            "icon-color": "#ffffff",
+            "icon-halo-color": "#0b1a2a",
+            "icon-halo-width": 1.6,
+        },
+    };
+
     const stationsLayerStyle: CircleLayer = {
         source: "stations",
         id: "station",
         type: "circle",
         minzoom: 7,
         paint: {
-            "circle-color": "#7fb3d5",
+            // Small blue dot — distinct from the green trains.
+            "circle-color": "#0B6CF2",
             "circle-radius": [
                 "interpolate",
                 ["linear"],
                 ["zoom"],
                 7,
-                1.5,
+                2,
                 12,
-                2.5,
+                4,
             ],
-            "circle-opacity": [
-                "interpolate",
-                ["linear"],
-                ["zoom"],
-                7,
-                0.45,
-                12,
-                0.65,
-            ],
+            "circle-opacity": 0.95,
             "circle-stroke-width": 1,
-            "circle-stroke-color": "#0b1a2a",
-            "circle-stroke-opacity": 0.8,
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-opacity": 1,
         },
     };
 
@@ -807,6 +930,74 @@ function Home() {
         },
     };
 
+    // Speed heatmap (F5.1): the selected train's track, coloured by average
+    // speed — red (slow) → yellow → green (fast). Drawn thick so the route reads
+    // clearly. A dark casing underneath keeps it visible over any basemap.
+    const speedHeatmapCasingStyle: LineLayer = {
+        source: "speed-route-heatmap",
+        id: "speed-route-heatmap-casing",
+        type: "line",
+        paint: {
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 6, 14, 13],
+            "line-color": "#0b1a2a",
+            "line-opacity": 0.45,
+        },
+        layout: { "line-cap": "round", "line-join": "round" },
+    };
+
+    const speedHeatmapLayerStyle: LineLayer = {
+        source: "speed-route-heatmap",
+        id: "speed-route-heatmap",
+        type: "line",
+        paint: {
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 4, 14, 9],
+            "line-opacity": 0.6,
+            "line-color": [
+                "interpolate",
+                ["linear"],
+                ["get", "avgSpeedKmh"],
+                28,
+                "#d7263d", // slow — red
+                62,
+                "#eab308", // medium — yellow
+                100,
+                "#22a447", // fast — green
+            ],
+        },
+        layout: { "line-cap": "round", "line-join": "round" },
+    };
+
+    // Rail network outline (heatmap toggle OFF): the same network geometry,
+    // drawn as a subtle green dashed line so the tracks stay visible on the
+    // map without the speed colouring.
+    const networkOutlineStyle: LineLayer = {
+        source: "speed-route-heatmap",
+        id: "network-outline",
+        type: "line",
+        paint: {
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.5, 14, 4],
+            "line-color": "#22a447",
+            "line-opacity": 0.65,
+            "line-dasharray": [2, 2],
+        },
+        layout: { "line-cap": "round", "line-join": "round" },
+    };
+
+    // Stops on the route — solid red markers ("altos"): this is where the train
+    // halts. Excess-dwell data still rides on each feature for future use.
+    const dwellHeatmapLayerStyle: CircleLayer = {
+        source: "dwell-route-heatmap",
+        id: "dwell-route-heatmap",
+        type: "circle",
+        paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 4, 12, 8],
+            "circle-color": "#d7263d",
+            "circle-opacity": 0.95,
+            "circle-stroke-width": 1.5,
+            "circle-stroke-color": "#ffffff",
+        },
+    };
+
     function onFlyToTrain(trainNumber: number) {
         handlePopupClose();
         const vehicle = vehicles?.find((v) => v.trainNumber == trainNumber);
@@ -823,6 +1014,25 @@ function Home() {
             onVehicleSelected(vehicle);
         }
     }
+
+    const legendCardStyle: CSSProperties = {
+        background: "rgba(255,255,255,0.95)",
+        borderRadius: 8,
+        padding: "8px 10px",
+        boxShadow: "0 1px 6px rgba(0,0,0,0.3)",
+        fontSize: "0.7rem",
+        color: "#1a1a1a",
+    };
+    const legendTitleStyle: CSSProperties = {
+        fontWeight: 700,
+        marginBottom: 5,
+    };
+    const legendRowStyle: CSSProperties = {
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        fontVariantNumeric: "tabular-nums",
+    };
 
     return (
         <>
@@ -1002,6 +1212,22 @@ function Home() {
                         {i18n.language.toUpperCase()}
                     </span>
                 </TopBarButton>
+                <TopBarButton
+                    title={t("heatmap.toggle")}
+                    onClick={() => {
+                        setShowRouteHeatmap((v) => !v);
+                        trackUmamiEvent("heatmap_toggled", {
+                            layer: "network",
+                        });
+                    }}
+                    style={
+                        showRouteHeatmap
+                            ? { background: "#0b6cf2", color: "#fff" }
+                            : undefined
+                    }
+                >
+                    <Gauge size={26} />
+                </TopBarButton>
             </div>
             <TopBarButton
                 style={{
@@ -1026,6 +1252,70 @@ function Home() {
                     </Centered>
                 </FadeInOut>
             </div>
+            {heatmapActive && (
+                <div
+                    style={{
+                        position: "absolute",
+                        zIndex: 1,
+                        left: 0,
+                        bottom: 0,
+                        margin: "20px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 8,
+                    }}
+                >
+                    <div style={legendCardStyle}>
+                        <div style={legendTitleStyle}>
+                            {t("heatmap.speed_legend")}
+                        </div>
+                        {(
+                            [
+                                ["#22a447", "speed_fast"],
+                                ["#eab308", "speed_medium"],
+                                ["#d7263d", "speed_slow"],
+                            ] as const
+                        ).map(([color, key], i) => (
+                            <div
+                                key={key}
+                                style={{
+                                    ...legendRowStyle,
+                                    marginTop: i === 0 ? 0 : 4,
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        width: 14,
+                                        height: 8,
+                                        borderRadius: 2,
+                                        background: color,
+                                        flexShrink: 0,
+                                    }}
+                                />
+                                <span>{t(`heatmap.${key}`)}</span>
+                            </div>
+                        ))}
+                        <div
+                            style={{
+                                ...legendRowStyle,
+                                marginTop: 6,
+                            }}
+                        >
+                            <div
+                                style={{
+                                    width: 12,
+                                    height: 12,
+                                    borderRadius: 12,
+                                    background: "#d7263d",
+                                    border: "1.5px solid #fff",
+                                    flexShrink: 0,
+                                }}
+                            />
+                            <span>{t("heatmap.stop")}</span>
+                        </div>
+                    </div>
+                </div>
+            )}
             <WGLMap
                 id="map"
                 initialViewState={{
@@ -1038,28 +1328,66 @@ function Home() {
                 onMouseEnter={onMouseEnter}
                 onMouseLeave={onMouseLeave}
                 onLoad={(evt) => {
-                    // set color of the train railways to green
-                    evt.target.setPaintProperty(
-                        "railway",
-                        "line-color",
-                        "#1c4122",
-                    );
-
-                    evt.target.setPaintProperty(
-                        "railway_minor",
-                        "line-color",
-                        "#112714",
-                    );
-
-                    evt.target.setLayerZoomRange("railway", 4, 22);
-                    evt.target.setLayerZoomRange("railway_minor", 15, 22);
+                    // Recolour the railway lines green — but only if the active
+                    // basemap style actually exposes those layers. Different
+                    // styles name layers differently; guarding avoids a throw
+                    // that would leave the map blank.
+                    const map = evt.target;
+                    if (map.getLayer("railway")) {
+                        map.setPaintProperty(
+                            "railway",
+                            "line-color",
+                            "#1c4122",
+                        );
+                        map.setLayerZoomRange("railway", 4, 22);
+                    }
+                    if (map.getLayer("railway_minor")) {
+                        map.setPaintProperty(
+                            "railway_minor",
+                            "line-color",
+                            "#112714",
+                        );
+                        map.setLayerZoomRange("railway_minor", 15, 22);
+                    }
                 }}
                 cursor={cursor}
             >
+                {/* Rendered first so the rail geometry sits BELOW the
+                    stations and vehicles. Heatmap ON → speed colouring;
+                    heatmap OFF → subtle green dashed track outline. */}
+                {speedHeatmap && (
+                    <Source
+                        id="speed-route-heatmap"
+                        type="geojson"
+                        data={speedHeatmapGeoJSON}
+                    >
+                        {heatmapActive ? (
+                            <>
+                                <Layer
+                                    {...speedHeatmapCasingStyle}
+                                ></Layer>
+                                <Layer
+                                    {...speedHeatmapLayerStyle}
+                                ></Layer>
+                            </>
+                        ) : (
+                            <Layer {...networkOutlineStyle}></Layer>
+                        )}
+                    </Source>
+                )}
                 <Source id="stations" type="geojson" data={stationsGeoJSON}>
                     <Layer {...stationsHitboxLayerStyle}></Layer>
                     <Layer {...stationsLayerStyle}></Layer>
                 </Source>
+                {heatmapActive && (
+                    <Source
+                        id="dwell-route-heatmap"
+                        type="geojson"
+                        data={dwellHeatmapGeoJSON}
+                    >
+                        <Layer {...dwellHeatmapLayerStyle}></Layer>
+                    </Source>
+                )}
                 <Source
                     id="vehicles"
                     type="geojson"
@@ -1068,723 +1396,46 @@ function Home() {
                 >
                     <Layer {...vehiclesStatusLayerStyle}></Layer>
                     <Layer {...vehiclesIconLayerStyle}></Layer>
+                    <Layer {...vehiclesArrowLayerStyle}></Layer>
                 </Source>
 
-                {showPopup && selectedVehicle && !isMobile && (
-                    <Popup
-                        longitude={parseFloat(selectedVehicle.longitude)}
-                        latitude={parseFloat(selectedVehicle.latitude)}
-                        // anchor={getPopupAnchorForHeading(
-                        //     selectedVehicle.heading ?? 0
-                        // )}
-                        anchor="bottom"
-                        offset={20}
-                        onClose={handlePopupClose}
-                        closeButton={true}
-                        closeOnClick={false}
-                    >
-                        <div className="flex items-start absolute top-[12.5px] left-[12.5px] justify-between w-[290px]">
-                            <div
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 8,
-                                }}
-                            >
-                                <h1
-                                    style={{
-                                        fontWeight: "900",
-                                        fontSize: "1.1rem",
-                                    }}
-                                >
-                                    {t("vehicle_popup.train", {
-                                        trainNumber:
-                                            selectedVehicle?.trainNumber,
-                                    })}
-                                </h1>
-                                <ReliabilityBadge
-                                    trainNumber={selectedVehicle.trainNumber}
-                                />
-                            </div>
-
-                            {selectedVehicle?.units &&
-                                selectedVehicle?.units.length > 0 && (
-                                    <Pill color={BadgeColor.green} wrapping>
-                                        <div className="flex items-center gap-1 pr-2 pl-2">
-                                            <Train size={15} />
-                                            <p>
-                                                {selectedVehicle?.units
-                                                    .map((u) =>
-                                                        getFormattedFleetNumber(
-                                                            u,
-                                                        ),
-                                                    )
-                                                    .join(" + ")}
-                                            </p>
-                                        </div>
-                                    </Pill>
-                                )}
-                        </div>
-
-                        <p
-                            style={{
-                                position: "absolute",
-                                top: "30.5px",
-                                left: "12.5px",
-                                fontWeight: "700",
-                                fontSize: "0.8rem",
-                                color: "gray",
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 4,
-                            }}
-                        >
-                            {selectedVehicle.delayTrend === "up" && (
-                                <ArrowUp
-                                    size={12}
-                                    weight="bold"
-                                    color="#d7263d"
-                                />
-                            )}
-                            {selectedVehicle.delayTrend === "down" && (
-                                <ArrowDown
-                                    size={12}
-                                    weight="bold"
-                                    color="#388344"
-                                />
-                            )}
-                            <span>
-                                {selectedVehicle.delay === 0 &&
-                                    t("vehicle_popup.schedule_adherence.on_time")}
-                                {selectedVehicle.delay > 0 &&
-                                    t("vehicle_popup.schedule_adherence.late", {
-                                        formattedDuration: formatDuration(
-                                            selectedVehicle.delay,
-                                            true,
-                                        ),
-                                    })}
-                                {selectedVehicle.delay < 0 &&
-                                    t("vehicle_popup.schedule_adherence.early", {
-                                        formattedDuration: formatDuration(
-                                            Math.abs(selectedVehicle.delay),
-                                            true,
-                                        ),
-                                    })}
-                            </span>
-                        </p>
-
-                        {!!selectedVehicle.occupancy && (
-                            <p
-                                className={`font-bold ${
-                                    selectedVehicle.occupancy < 65
-                                        ? "text-green-500"
-                                        : selectedVehicle.occupancy < 85
-                                          ? "text-yellow-500"
-                                          : "text-red-500"
-                                }`}
-                            >
-                                {selectedVehicle.occupancy < 65
-                                    ? "Muitos lugares disponíveis"
-                                    : selectedVehicle.occupancy < 85
-                                      ? "Poucos lugares sentados"
-                                      : "Comboio cheio"}{" "}
-                                ({selectedVehicle.occupancy}% ocupado)
-                            </p>
-                        )}
-
-                        <div className="flex items-center justify-evenly p-2">
-                            {selectedVehicle.service &&
-                                selectedVehicle.service.designation && (
-                                    <>
-                                        <div style={{ height: "5px" }}></div>
-                                        <div
-                                            style={{
-                                                display: "flex",
-                                                justifyContent: "space-evenly",
-                                            }}
-                                        >
-                                            <Pill
-                                                color={BadgeColor.subtleGreen}
-                                            >
-                                                <div className="flex items-center gap-1">
-                                                    <p>
-                                                        {selectedVehicle.service.designation.replace(
-                                                            "(Alta Qualidade)",
-                                                            "",
-                                                        )}
-                                                    </p>
-                                                    {selectedVehicle.service.designation.endsWith(
-                                                        "(Alta Qualidade)",
-                                                    ) && (
-                                                        <Sparkle
-                                                            size={15}
-                                                            weight="fill"
-                                                        />
-                                                    )}
-                                                </div>
-                                            </Pill>
-                                        </div>
-                                        <div style={{ height: "10px" }}></div>
-                                    </>
-                                )}
-                            {"speed" in selectedVehicle && (
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    <Pill>
-                                        <Gauge size={15} />
-
-                                        <div style={{ width: "7px" }}></div>
-                                        {selectedVehicle?.speed?.toFixed(1)}
-                                        <div style={{ width: "7px" }}></div>
-                                        <p>km/h</p>
-                                    </Pill>
-                                </div>
-                            )}
-                        </div>
-
-                        {selectedVehicle.origin &&
-                            selectedVehicle.origin.designation &&
-                            selectedVehicle.destination &&
-                            selectedVehicle.destination.designation && (
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        flexDirection: "row",
-                                        justifyContent: "center",
-                                        alignItems: "center",
-                                        gap: "10px",
-                                    }}
-                                >
-                                    <h1
-                                        style={{
-                                            fontWeight: "400",
-                                            fontSize: "1rem",
-                                        }}
-                                    >
-                                        {selectedVehicle.origin.designation}
-                                    </h1>
-
-                                    <ArrowRight size={15} weight="bold" />
-                                    <h1
-                                        style={{
-                                            fontWeight: "400",
-                                            fontSize: "1rem",
-                                        }}
-                                    >
-                                        {
-                                            selectedVehicle.destination
-                                                .designation
-                                        }
-                                    </h1>
-                                </div>
-                            )}
-
-                        {selectedVehicle.status === VehicleStatus.Completed && (
-                            <>
-                                <div style={{ height: "5px" }}></div>
-
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    <p
-                                        style={{
-                                            color: "gray",
-                                            fontSize: "0.8rem",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                        }}
-                                    >
-                                        {t("vehicle_popup.status.completed")}
-                                    </p>
-                                </div>
-                            </>
-                        )}
-
-                        {selectedVehicle.status ===
-                            VehicleStatus.NotStarted && (
-                            <>
-                                <div style={{ height: "5px" }}></div>
-
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    <p
-                                        style={{
-                                            color: "gray",
-                                            fontSize: "0.8rem",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                        }}
-                                    >
-                                        {t("vehicle_popup.status.not_started")}
-                                    </p>
-                                </div>
-                            </>
-                        )}
-
-                        <div style={{ height: "5px" }}></div>
-
-                        {selectedVehicle.status === VehicleStatus.InTransit && (
-                            <>
-                                <div style={{ height: "5px" }}></div>
-
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    <p
-                                        style={{
-                                            color: "gray",
-                                            fontSize: "0.8rem",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                        }}
-                                    >
-                                        {t("vehicle_popup.status.in_transit")}
-                                    </p>
-                                </div>
-                            </>
-                        )}
-
-                        {(selectedVehicle.status === VehicleStatus.AtOrigin ||
-                            selectedVehicle.status ===
-                                VehicleStatus.AtStation) && (
-                            <>
-                                <div style={{ height: "5px" }}></div>
-
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    <p
-                                        style={{
-                                            color: "gray",
-                                            fontSize: "0.8rem",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                        }}
-                                    >
-                                        {selectedVehicle.status ===
-                                        VehicleStatus.AtOrigin
-                                            ? t("vehicle_popup.status.at_origin")
-                                            : t("vehicle_popup.status.at_station")}
-                                        {(() => {
-                                            const station =
-                                                stations?.stations?.find(
-                                                    (s) =>
-                                                        s.code ===
-                                                        selectedVehicle.lastStation,
-                                                )?.designation;
-
-                                            return station
-                                                ? ` (${station})`
-                                                : "";
-                                        })()}
-                                    </p>
-                                </div>
-
-                                {(() => {
-                                    const arrivedAt =
-                                        arrivalTimestampsRef.current.get(
-                                            selectedVehicle.trainNumber,
-                                        );
-                                    if (!arrivedAt) return null;
-                                    const stop = selectedTrip?.trainStops.find(
-                                        (s) =>
-                                            s.station.code ===
-                                            selectedVehicle.lastStation,
-                                    );
-                                    return (
-                                        <div
-                                            style={{
-                                                display: "flex",
-                                                justifyContent: "center",
-                                                marginTop: 4,
-                                            }}
-                                        >
-                                            <StationDwellTimer
-                                                arrivedAt={arrivedAt}
-                                                scheduledDwellSeconds={scheduledDwellSeconds(
-                                                    stop?.arrival ?? null,
-                                                    stop?.departure ?? null,
-                                                )}
-                                            />
-                                        </div>
-                                    );
-                                })()}
-                            </>
-                        )}
-
-                        {selectedVehicle.status === VehicleStatus.NearNext && (
-                            <>
-                                <div style={{ height: "5px" }}></div>
-
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    <p
-                                        style={{
-                                            color: "gray",
-                                            fontSize: "0.8rem",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                            textAlign: "center",
-                                        }}
-                                    >
-                                        {t("vehicle_popup.status.near_next")}
-                                        <br></br>
-                                        {(() => {
-                                            const station =
-                                                stations?.stations?.find(
-                                                    (s) =>
-                                                        s.code ===
-                                                        selectedVehicle.gtfs?.stopId?.replace(
-                                                            "_",
-                                                            "-",
-                                                        ),
-                                                )?.designation;
-
-                                            return station
-                                                ? ` (${station})`
-                                                : "";
-                                        })()}
-                                    </p>
-                                </div>
-                            </>
-                        )}
-
-                        {selectedVehicle.status === VehicleStatus.Cancelled && (
-                            <>
-                                <div style={{ height: "5px" }}></div>
-
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    <p
-                                        style={{
-                                            color: "#d7263d",
-                                            fontSize: "0.8rem",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                        }}
-                                    >
-                                        {t("vehicle_popup.status.cancelled")}
-                                    </p>
-                                </div>
-                            </>
-                        )}
-
-                        <div
-                            style={{
-                                width: 320,
-                                maxHeight: 240,
-                                overflowY: "auto",
-                                marginTop: 8,
-                                paddingRight: 4,
-                            }}
-                        >
-                            <TrainStopsList
-                                trip={selectedTrip}
-                                nextStopCode={
-                                    selectedVehicle.gtfs?.stopId ?? undefined
-                                }
-                                status={selectedVehicle.status}
-                                physicsEta={physicsEtaSelected}
-                            />
-                        </div>
-
-                        <div style={{ height: "20px" }}></div>
-
-                        <div>
-                            {selectedVehicle.timestamp &&
-                                selectedVehicle.timestamp && (
-                                    <p
-                                        style={{
-                                            color: "gray",
-                                            position: "absolute",
-                                            bottom: "2px",
-                                            left: "10px",
-                                        }}
-                                    >
-                                        {t("vehicle_popup.updated_at")}:{" "}
-                                        {new Date(
-                                            selectedVehicle.timestamp,
-                                        ).toLocaleTimeString()}
-                                    </p>
-                                )}
-                            {selectedVehicle.source && (
-                                <p
-                                    style={{
-                                        color: "gray",
-                                        position: "absolute",
-                                        bottom: "2px",
-                                        right: "10px",
-                                    }}
-                                >
-                                    via {selectedVehicle.source}
-                                </p>
-                            )}
-                        </div>
-                    </Popup>
-                )}
-                {isMobile && (
-                    <VehicleBottomSheet
-                        vehicle={
-                            showPopup && selectedVehicle ? selectedVehicle : null
-                        }
+            </WGLMap>
+            <DetailPanel
+                open={!!(selectedVehicle || selectedStation)}
+                title={
+                    selectedVehicle
+                        ? t("vehicle_popup.train", {
+                              trainNumber: selectedVehicle.trainNumber,
+                          })
+                        : selectedStation?.designation ?? ""
+                }
+                selectionKey={
+                    selectedVehicle
+                        ? `v${selectedVehicle.trainNumber}`
+                        : selectedStation
+                          ? `s${selectedStation.code}`
+                          : null
+                }
+                onClose={handleDetailPanelClose}
+            >
+                {selectedVehicle ? (
+                    <VehicleDetailContent
+                        vehicle={selectedVehicle}
                         trip={selectedTrip}
                         physicsEta={physicsEtaSelected}
                         arrivedAt={arrivedAtSelected}
-                        onClose={handlePopupClose}
+                        stations={stations?.stations}
                     />
-                )}
-                {showStationPopup && selectedStation && (
-                    <Popup
-                        longitude={parseFloat(selectedStation.longitude)}
-                        latitude={parseFloat(selectedStation.latitude)}
-                        anchor="bottom"
-                        offset={20}
-                        onClose={handleStationPopupClose}
-                        closeButton={true}
-                        closeOnClick={false}
-                    >
-                        <div>
-                            <p
-                                style={{
-                                    fontWeight: "700",
-                                    fontSize: "0.8rem",
-                                    color: "gray",
-                                    textTransform: "uppercase",
-                                }}
-                            >
-                                {t("station_popup.station_header")}
-                            </p>
-                            <h1
-                                style={{
-                                    fontWeight: "900",
-                                    fontSize: "1.1rem",
-                                }}
-                            >
-                                {selectedStation.designation}
-                            </h1>
-                            <div style={{ height: "10px" }}></div>
-                            <p style={{ color: "gray", opacity: 0.5 }}>
-                                {"ID: " + selectedStation.code}
-                            </p>
-
-                            <div style={{ height: "15px" }}></div>
-                            {isLoadingArrivals ? (
-                                <Loader />
-                            ) : selectedStationNextArrivals?.length == 0 ? (
-                                <p
-                                    style={{
-                                        fontWeight: "700",
-                                        fontSize: "0.8rem",
-                                        color: "gray",
-                                        textTransform: "uppercase",
-                                    }}
-                                >
-                                    {t("station_popup.no_arrivals")}
-                                </p>
-                            ) : (
-                                <>
-                                    <p
-                                        style={{
-                                            fontWeight: "700",
-                                            fontSize: "0.8rem",
-                                            color: "gray",
-                                            textTransform: "uppercase",
-                                        }}
-                                    >
-                                        {t("station_popup.next_arrivals")}
-                                    </p>
-                                    <div style={{ height: "5px" }}></div>
-
-                                    <div
-                                        style={{
-                                            display: "flex",
-                                            flexDirection: "column",
-                                            gap: "10px",
-                                        }}
-                                    >
-                                        {selectedStationNextArrivals?.map(
-                                            (arrival) => {
-                                                return (
-                                                    <div
-                                                        key={
-                                                            arrival.trainNumber
-                                                        }
-                                                        style={{
-                                                            display: "flex",
-                                                            alignItems:
-                                                                "center",
-                                                            justifyContent:
-                                                                "space-between",
-                                                        }}
-                                                    >
-                                                        <div
-                                                            style={{
-                                                                display: "flex",
-                                                                alignItems:
-                                                                    "center",
-                                                                gap: "10px",
-                                                            }}
-                                                        >
-                                                            <Pill
-                                                                color={
-                                                                    BadgeColor.green
-                                                                }
-                                                            >
-                                                                <p
-                                                                    style={{
-                                                                        fontSize: 11,
-                                                                    }}
-                                                                >
-                                                                    {`${arrival.trainService.code} ${arrival.trainNumber}`}
-                                                                </p>
-                                                            </Pill>
-                                                            <ArrowRight
-                                                                size={15}
-                                                                weight="bold"
-                                                            />
-                                                            <p
-                                                                style={{
-                                                                    fontWeight:
-                                                                        "bold",
-                                                                    fontSize:
-                                                                        "0.8rem",
-                                                                }}
-                                                            >
-                                                                {
-                                                                    arrival
-                                                                        .trainDestination
-                                                                        .designation
-                                                                }
-                                                            </p>
-                                                        </div>
-                                                        <div
-                                                            style={{
-                                                                width: "7px",
-                                                            }}
-                                                        ></div>
-                                                        <div
-                                                            style={{
-                                                                display: "flex",
-                                                                alignItems:
-                                                                    "center",
-                                                                gap: "5px",
-                                                            }}
-                                                        >
-                                                            <p
-                                                                style={{
-                                                                    fontWeight:
-                                                                        "bold",
-                                                                    color: "green",
-                                                                }}
-                                                            >
-                                                                {arrival.durationToArrivalMinutes !=
-                                                                    null &&
-                                                                arrival.durationToArrivalMinutes <=
-                                                                    0 ? (
-                                                                    <ArrivingBusAnimation color="green" />
-                                                                ) : (
-                                                                    `${arrival.durationToArrivalMinutes} min`
-                                                                )}
-                                                            </p>
-                                                            {!!vehicles?.find(
-                                                                // being done thrice
-                                                                (v) =>
-                                                                    v.trainNumber ===
-                                                                    arrival.trainNumber,
-                                                            ) && (
-                                                                <button
-                                                                    onClick={() =>
-                                                                        onFlyToTrain(
-                                                                            arrival.trainNumber!,
-                                                                        )
-                                                                    }
-                                                                    style={{
-                                                                        cursor: !!vehicles?.find(
-                                                                            (
-                                                                                v,
-                                                                            ) =>
-                                                                                v.trainNumber ===
-                                                                                arrival.trainNumber,
-                                                                        )
-                                                                            ? "pointer"
-                                                                            : "default",
-                                                                    }}
-                                                                >
-                                                                    <Pill
-                                                                        color={
-                                                                            BadgeColor.green
-                                                                        }
-                                                                        wrapping={
-                                                                            true
-                                                                        }
-                                                                    >
-                                                                        <div
-                                                                            style={{
-                                                                                display:
-                                                                                    "flex",
-                                                                                alignItems:
-                                                                                    "center",
-                                                                                gap: "5px",
-                                                                                padding:
-                                                                                    "0 5px",
-                                                                            }}
-                                                                        >
-                                                                            <TrainIcon
-                                                                                color="white"
-                                                                                size={
-                                                                                    12
-                                                                                }
-                                                                                // sizeRatio={
-                                                                                //     0.5
-                                                                                // }
-                                                                            />
-
-                                                                            <CaretRight
-                                                                                size={
-                                                                                    15
-                                                                                }
-                                                                            />
-                                                                        </div>
-                                                                    </Pill>
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            },
-                                        )}
-                                    </div>
-                                </>
-                            )}
-                        </div>
-                    </Popup>
-                )}
-            </WGLMap>
+                ) : selectedStation ? (
+                    <StationDetailContent
+                        station={selectedStation}
+                        arrivals={selectedStationNextArrivals}
+                        isLoadingArrivals={isLoadingArrivals}
+                        vehicles={vehicles}
+                        onFlyToTrain={onFlyToTrain}
+                    />
+                ) : null}
+            </DetailPanel>
         </>
     );
 }

@@ -11,6 +11,13 @@ async function fetcher(url: string): Promise<ReliabilityScore | null> {
     return (await res.json()) as ReliabilityScore;
 }
 
+export interface DayOfWeekScore {
+    dayOfWeek: number; // 0 = Sunday … 6 = Saturday
+    samples: number;
+    avgDelaySeconds: number;
+    onTimePercent: number;
+}
+
 export interface ReliabilityScore {
     trainNumber: number;
     samples: number;
@@ -19,6 +26,15 @@ export interface ReliabilityScore {
     p90DelaySeconds: number;
     cancellationPercent: number; // 0–100
     daysCovered: number;
+    source?: "dwell" | "snapshots";
+    // F4.1 — per-day-of-week breakdown for the badge tooltip
+    byDayOfWeek?: DayOfWeekScore[];
+    // F4.2 — the line this train runs on (from the GTFS-derived map)
+    line?: {
+        routeId: string;
+        routeShortName: string | null;
+        headsign: string | null;
+    } | null;
 }
 
 const HISTORY_START =

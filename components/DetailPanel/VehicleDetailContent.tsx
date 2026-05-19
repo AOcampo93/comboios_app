@@ -54,7 +54,7 @@ export default function VehicleDetailContent({
         vehicle.status === VehicleStatus.AtOrigin ||
         vehicle.status === VehicleStatus.AtStation;
 
-    const lastStop = trip?.trainStops.find(
+    const lastStop = trip?.trainStops?.find(
         (s) => s.station.code === vehicle.lastStation,
     );
 

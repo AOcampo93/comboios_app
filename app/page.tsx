@@ -360,7 +360,7 @@ function Home() {
             return null;
         }
         const cpEta =
-            selectedTrip.trainStops.find((s) => s.station.code === nextCode)
+            selectedTrip.trainStops?.find((s) => s.station.code === nextCode)
                 ?.ETA ?? null;
         return computePhysicsETA(
             selectedTrip,

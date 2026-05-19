@@ -146,5 +146,15 @@ export async function GET(
         if (gtfsTrip) return Response.json(gtfsTrip);
     }
 
-    return Response.json(json ?? { occupancy: null });
+    // Never let a missing trainStops escape — the client does
+    // `selectedTrip.trainStops.find(...)` without a guard, so an undefined array
+    // would crash the page. Always return a Trip-shaped object with stops:[].
+    const safe = (json && typeof json === "object" ? json : {}) as Record<
+        string,
+        unknown
+    >;
+    if (!Array.isArray(safe.trainStops)) {
+        safe.trainStops = [];
+    }
+    return Response.json(safe);
 }

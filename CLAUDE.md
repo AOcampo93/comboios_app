@@ -146,6 +146,31 @@ Cancellation tracking is still absent, so `reliability.cancellationPercent` is
 hardcoded to 0. The GTFS fallback is schedule-only (no realtime ETA/delay) — if
 Backend A's `/trips` upstream is restored it takes precedence automatically.
 
+The speed heatmap displays segments where the underlying
+`route_segments.avg_speed_kmh` includes occasional GPS-noise outliers (~558
+km/h observed on real prod data, while CP's fastest train is ~220 km/h).
+Brief positional jitter creates a tiny travel time with a real distance.
+A few segments may appear bright green when they shouldn't. Pre-existing
+in the scraper's aggregator; can be fixed by capping `avg_speed_kmh` in
+either the aggregator (`comboios_scrapper/src/aggregator.ts`) or the
+heatmap query in `app/api/heatmap/speed/route.ts`.
+
+## Production deployment notes (Coolify)
+
+If you're deploying this to Coolify alongside the scraper repo:
+
+- The Postgres BD container's IP changes per redeploy. **Always use the
+  container hostname**, not an IP, in `DATABASE_URL`. The hostname looks
+  like `db-x11j2gf0du0mz56h52zvbuhb` and is available once the BD Service
+  has "Connect To Predefined Network" enabled in Coolify, joining the
+  shared `coolify` network. Same applies to the scraper.
+- The historical Backend B endpoints rely on the scraper's aggregator
+  populating `segment_paths` + `route_segments` + `station_dwell_events`
+  with `scheduled_dwell_seconds`. The aggregator only runs once nightly
+  on yesterday's data; for first-time deploy use the scraper's
+  `dist/scripts/backfill-aggregations.js` + `dist/scripts/backfill-gtfs.js`
+  to populate from accumulated history in one pass.
+
 ## Validating work locally
 
 ```bash
@@ -163,5 +188,12 @@ DATABASE_URL='postgres://postgres:postgres@localhost:5432/comboios' npm run dev
 #    Or curl: http://localhost:3000/api/reliability/train/528
 ```
 
-Last validated 2026-05-01: curl returned `samples: 240, onTimePercent: 98.33%,
-source: "dwell"`; badge confirmed in the train 4401 popup.
+Last validated 2026-05-01 (local): curl returned `samples: 240, onTimePercent:
+98.33%, source: "dwell"`; badge confirmed in the train 4401 popup.
+
+Last validated 2026-05-20 (production at comboios-app.arturoocampo.com):
+`/api/heatmap/speed` returns 1961 segments, `/api/heatmap/dwell` has
+`avgExcessSeconds` on 407/413 stations, `/api/reliability/train/528`
+returns real prod data (`samples: 230, source: "dwell"`). Frontend heatmap
+visible end-to-end. See `comboios_scrapper/CLAUDE.md` "Last validated
+state" for the deploy sequence that got there.

@@ -26,6 +26,12 @@ export async function GET() {
     if (!pool) return new Response(null, { status: 404 });
 
     try {
+        // Drop rows whose polyline is essentially a straight chord between two
+        // distant stations: the aggregator builds segment_paths from raw GPS
+        // pings and accepts as few as 2 points, so a journey with sparse GPS
+        // (or a teleport) produces a long diagonal across the country. A real
+        // rail track of any length curves enough to be >3% longer than the
+        // straight-line distance; under that we treat it as a GPS-gap artefact.
         const { rows } = await pool.query<SpeedRow>(
             `
             SELECT
@@ -48,6 +54,17 @@ export async function GET() {
             ) agg
               ON agg.from_station = sp.from_station
              AND agg.to_station   = sp.to_station
+            WHERE NOT (
+                ST_Distance(
+                    ST_StartPoint(sp.geometry::geometry)::geography,
+                    ST_EndPoint(sp.geometry::geometry)::geography
+                ) > 8000
+                AND ST_Length(sp.geometry)
+                    <= ST_Distance(
+                        ST_StartPoint(sp.geometry::geometry)::geography,
+                        ST_EndPoint(sp.geometry::geometry)::geography
+                    ) * 1.03
+            )
             `,
         );
 

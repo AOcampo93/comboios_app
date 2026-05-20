@@ -54,21 +54,37 @@ export async function GET() {
                 FROM route_segments
                 WHERE avg_speed_kmh IS NOT NULL
                   AND avg_speed_kmh > 0
+                  -- Cap apparent speed at CP's fastest train (Alfa Pendular,
+                  -- ~220 km/h). Anything above is a GPS teleport artefact and
+                  -- pollutes both the avg colour and the heatmap distribution.
+                  AND avg_speed_kmh <= 220
                 GROUP BY from_station, to_station
             ) agg
               ON agg.from_station = sp.from_station
              AND agg.to_station   = sp.to_station
-            WHERE NOT (
+            WHERE
+                -- Hard cap on chord length: no two consecutive stations in
+                -- the Portuguese rail network sit > 50 km apart, so any
+                -- segment_path with a longer chord is an express-service leg
+                -- where the aggregator collapsed several skipped stations
+                -- into one giant straight diagonal. Drop them entirely.
                 ST_Distance(
                     ST_StartPoint(sp.geometry::geometry)::geography,
                     ST_EndPoint(sp.geometry::geometry)::geography
-                ) > 5000
-                AND ST_NumPoints(sp.geometry::geometry) <
-                    (ST_Distance(
+                ) <= 50000
+                -- Density filter for shorter chords: drop sparse GPS traces
+                -- with < 0.5 vertices/km that draw as visual straight lines.
+                AND NOT (
+                    ST_Distance(
                         ST_StartPoint(sp.geometry::geometry)::geography,
                         ST_EndPoint(sp.geometry::geometry)::geography
-                    ) / 1000.0) * 0.5
-            )
+                    ) > 5000
+                    AND ST_NumPoints(sp.geometry::geometry) <
+                        (ST_Distance(
+                            ST_StartPoint(sp.geometry::geometry)::geography,
+                            ST_EndPoint(sp.geometry::geometry)::geography
+                        ) / 1000.0) * 0.5
+                )
             `,
         );
 

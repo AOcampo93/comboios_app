@@ -26,12 +26,16 @@ export async function GET() {
     if (!pool) return new Response(null, { status: 404 });
 
     try {
-        // Drop rows whose polyline is essentially a straight chord between two
-        // distant stations: the aggregator builds segment_paths from raw GPS
-        // pings and accepts as few as 2 points, so a journey with sparse GPS
-        // (or a teleport) produces a long diagonal across the country. A real
-        // rail track of any length curves enough to be >3% longer than the
-        // straight-line distance; under that we treat it as a GPS-gap artefact.
+        // Drop rows whose polyline is a sparse-GPS artefact: the aggregator
+        // accepts as few as 2 points, so a leg with few intermediate GPS pings
+        // (or a teleport) becomes a long diagonal across the country.
+        //
+        // Signal: vertices-per-km. A real GPS trace at 10–30 s polling has
+        // 1–5 pts/km even at full speed. Anything below 0.5 pts/km over a
+        // chord >5 km is almost certainly a GPS gap, regardless of how noisy
+        // the few samples were. This catches both the strictly-straight case
+        // (path ≈ chord, ratio 1.00) and the slightly-noisy case (path 5–10 %
+        // > chord) that the previous ratio-only filter missed.
         const { rows } = await pool.query<SpeedRow>(
             `
             SELECT
@@ -58,12 +62,12 @@ export async function GET() {
                 ST_Distance(
                     ST_StartPoint(sp.geometry::geometry)::geography,
                     ST_EndPoint(sp.geometry::geometry)::geography
-                ) > 8000
-                AND ST_Length(sp.geometry)
-                    <= ST_Distance(
+                ) > 5000
+                AND ST_NumPoints(sp.geometry::geometry) <
+                    (ST_Distance(
                         ST_StartPoint(sp.geometry::geometry)::geography,
                         ST_EndPoint(sp.geometry::geometry)::geography
-                    ) * 1.03
+                    ) / 1000.0) * 0.5
             )
             `,
         );

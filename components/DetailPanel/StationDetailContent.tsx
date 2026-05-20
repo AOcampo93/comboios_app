@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslation } from "react-i18next";
-import { ArrowRight, CaretRight } from "@phosphor-icons/react";
+import { ArrowRight, CaretRight, MapPinLine } from "@phosphor-icons/react";
 import { TrainIcon } from "lucide-react";
 import { EnrichedVehicle, Station, TrainArrival } from "@/types/cp-v2";
 import Pill, { BadgeColor } from "@/components/Pill/Pill";
@@ -42,12 +42,41 @@ export default function StationDetailContent({
 
     return (
         <div>
-            <p style={sectionLabelStyle}>
-                {t("station_popup.station_header")}
-            </p>
-            <h1 style={{ fontWeight: 900, fontSize: "1.1rem" }}>
-                {station.designation}
-            </h1>
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    minWidth: 0,
+                }}
+            >
+                <div
+                    aria-hidden="true"
+                    style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 16,
+                        background: "#0B6CF2",
+                        color: "#fff",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        boxShadow:
+                            "0 1px 3px rgba(0,0,0,0.2), inset 0 0 0 1px rgba(255,255,255,0.15)",
+                    }}
+                >
+                    <MapPinLine size={18} weight="fill" />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                    <p style={sectionLabelStyle}>
+                        {t("station_popup.station_header")}
+                    </p>
+                    <h1 style={{ fontWeight: 900, fontSize: "1.1rem" }}>
+                        {station.designation}
+                    </h1>
+                </div>
+            </div>
             <p style={{ color: "gray", opacity: 0.5, marginTop: 6 }}>
                 {"ID: " + station.code}
             </p>

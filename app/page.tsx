@@ -48,6 +48,7 @@ import {
     Layer,
     CircleLayer,
     Popup,
+    LayerProps,
     LineLayer,
     SymbolLayer,
 } from "react-map-gl/maplibre";
@@ -225,10 +226,6 @@ function Home() {
 
     useEffect(() => {
         if (map) {
-            map.loadImage("arrow.png").then((res) =>
-                map.addImage("arrow", res.data, { sdf: true }),
-            );
-
             map.loadImage("cp_vehicle_oriented_w_inv.png").then((res) =>
                 map.addImage("bus", res.data),
             );
@@ -384,6 +381,22 @@ function Home() {
             const currentTrainNumbers = new Set<number>();
             const nowMs = Date.now();
 
+            // Lookup by station code so we can derive a heading on the first
+            // poll: the upstream serves position-only and often the same lat/lon
+            // for several polls in a row, so deriving heading from two
+            // consecutive positions misses most trains.
+            const stationByCode = new Map<
+                string,
+                { lat: number; lon: number }
+            >();
+            stations?.stations?.forEach((s) => {
+                const slat = parseFloat(s.latitude);
+                const slon = parseFloat(s.longitude);
+                if (!Number.isNaN(slat) && !Number.isNaN(slon)) {
+                    stationByCode.set(s.code, { lat: slat, lon: slon });
+                }
+            });
+
             const enriched = newVehicles.vehicles.map((v) => {
                 currentTrainNumbers.add(v.trainNumber);
 
@@ -394,6 +407,24 @@ function Home() {
                     const prev = prevPositions.get(v.trainNumber);
                     if (prev && (prev[0] !== lon || prev[1] !== lat)) {
                         heading = getCalculatedHeading(prev, [lon, lat]);
+                    }
+                    // Fallback: bearing from the last station to the current
+                    // position. Works even when the upstream replays the same
+                    // GPS sample across polls and on the first render.
+                    if (
+                        (heading === null || heading === undefined) &&
+                        v.lastStation
+                    ) {
+                        const last = stationByCode.get(v.lastStation);
+                        if (
+                            last &&
+                            (last.lon !== lon || last.lat !== lat)
+                        ) {
+                            heading = getCalculatedHeading(
+                                [last.lon, last.lat],
+                                [lon, lat],
+                            );
+                        }
                     }
                     prevPositions.set(v.trainNumber, [lon, lat]);
                 }
@@ -456,7 +487,7 @@ function Home() {
 
             setVehicles(enriched);
         }
-    }, [newVehicles]);
+    }, [newVehicles, stations]);
 
     useEffect(() => {
         if (vehicles && isLoading) {
@@ -540,6 +571,14 @@ function Home() {
     vehicles?.forEach((vehicle) => {
         // generically do not show vehicles with invalid coordinates
         if (vehicle.latitude && vehicle.longitude) {
+            // Strip null heading so the arrow layer's `has heading` filter
+            // can exclude trains whose direction we couldn't derive — keeping
+            // the property at `null` would silently render arrows pointing 0°.
+            const { heading, ...rest } = vehicle;
+            const properties =
+                heading != null
+                    ? { ...vehicle, type: "vehicle" }
+                    : { ...rest, type: "vehicle" };
             vehiclesGeoJSON.features.push({
                 type: "Feature",
                 geometry: {
@@ -549,7 +588,7 @@ function Home() {
                         parseFloat(vehicle.latitude),
                     ],
                 },
-                properties: { ...vehicle, type: "vehicle" },
+                properties,
             });
         }
     });
@@ -790,17 +829,23 @@ function Home() {
                 "#808080", // gray
                 "#388344", // default green
             ],
-            "circle-radius": 5,
-            "circle-stroke-width": 2,
+            // Slightly larger + thicker white stroke so the train reads
+            // unambiguously above the speed-heatmap colored lines.
+            "circle-radius": 6,
+            "circle-stroke-width": 2.5,
             "circle-stroke-color": "#ffffff",
         },
     };
 
+    // Single direction-of-travel indicator: the oriented train PNG rotated by
+    // heading. Only one arrow per train so the symbol reads cleanly. CANCELLED
+    // / COMPLETED trains and trains whose heading we couldn't derive stay as
+    // the plain status dot.
     const vehiclesIconLayerStyle: SymbolLayer = {
         source: "vehicles",
         id: "vehicle-icon",
         type: "symbol",
-        // Only render icons for active, moving trains (CANCELLED/COMPLETED stay as plain dots)
+        minzoom: 8,
         filter: [
             "all",
             ["!=", ["get", "status"], "CANCELLED"],
@@ -817,53 +862,16 @@ function Home() {
                 "interpolate",
                 ["linear"],
                 ["zoom"],
-                10,
-                0.1,
-                20,
-                0.4,
-            ],
-            "icon-rotate": ["get", "heading"],
-        },
-    };
-
-    // Direction-of-travel arrow: a small SDF arrow sitting just ahead of the
-    // train dot, rotated to the heading derived from consecutive polls. Drawn
-    // on top so the way the train is going is always readable.
-    const vehiclesArrowLayerStyle: SymbolLayer = {
-        source: "vehicles",
-        id: "vehicle-arrow",
-        type: "symbol",
-        // Hidden when zoomed out — far away the dots and arrows blur together.
-        minzoom: 6,
-        filter: [
-            "all",
-            ["!=", ["get", "status"], "CANCELLED"],
-            ["!=", ["get", "status"], "COMPLETED"],
-            ["has", "heading"],
-        ],
-        layout: {
-            "icon-image": "arrow",
-            "icon-allow-overlap": true,
-            "icon-ignore-placement": true,
-            "icon-anchor": "center",
-            "icon-rotation-alignment": "map",
-            "icon-rotate": ["get", "heading"],
-            "icon-size": [
-                "interpolate",
-                ["linear"],
-                ["zoom"],
                 8,
-                0.55,
+                0.18,
+                12,
+                0.28,
                 16,
-                1.1,
+                0.4,
+                20,
+                0.5,
             ],
-            // Negative Y = ahead of the dot; the offset rotates with the icon.
-            "icon-offset": [0, -26],
-        },
-        paint: {
-            "icon-color": "#ffffff",
-            "icon-halo-color": "#0b1a2a",
-            "icon-halo-width": 1.6,
+            "icon-rotate": ["get", "heading"],
         },
     };
 
@@ -938,9 +946,9 @@ function Home() {
         id: "speed-route-heatmap-casing",
         type: "line",
         paint: {
-            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 6, 14, 13],
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 5, 14, 11],
             "line-color": "#0b1a2a",
-            "line-opacity": 0.45,
+            "line-opacity": 0.35,
         },
         layout: { "line-cap": "round", "line-join": "round" },
     };
@@ -950,8 +958,8 @@ function Home() {
         id: "speed-route-heatmap",
         type: "line",
         paint: {
-            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 4, 14, 9],
-            "line-opacity": 0.6,
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 3, 14, 8],
+            "line-opacity": 0.5,
             "line-color": [
                 "interpolate",
                 ["linear"],
@@ -975,12 +983,25 @@ function Home() {
         id: "network-outline",
         type: "line",
         paint: {
-            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.5, 14, 4],
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1, 14, 3],
             "line-color": "#22a447",
-            "line-opacity": 0.65,
+            "line-opacity": 0.3,
             "line-dasharray": [2, 2],
         },
         layout: { "line-cap": "round", "line-join": "round" },
+    };
+
+    // Sits between the basemap and every custom layer to dim the underlying
+    // map without affecting trains, stations or rail lines drawn on top.
+    // Lets the foreground (selected train, route) read clearly when the basemap
+    // would otherwise compete for attention.
+    const basemapDimStyle: LayerProps = {
+        id: "basemap-dim",
+        type: "background",
+        paint: {
+            "background-color": "#000000",
+            "background-opacity": 0.45,
+        },
     };
 
     // Stops on the route — solid red markers ("altos"): this is where the train
@@ -990,10 +1011,18 @@ function Home() {
         id: "dwell-route-heatmap",
         type: "circle",
         paint: {
-            "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 4, 12, 8],
+            "circle-radius": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                6,
+                2,
+                12,
+                4.5,
+            ],
             "circle-color": "#d7263d",
-            "circle-opacity": 0.95,
-            "circle-stroke-width": 1.5,
+            "circle-opacity": 0.9,
+            "circle-stroke-width": 1,
             "circle-stroke-color": "#ffffff",
         },
     };
@@ -1092,29 +1121,41 @@ function Home() {
                     style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: "0.55rem",
+                        gap: "0.6rem",
+                        padding: "6px 18px",
+                        borderRadius: 999,
+                        background: "rgba(11, 26, 42, 0.65)",
+                        backdropFilter: "blur(6px)",
+                        WebkitBackdropFilter: "blur(6px)",
+                        border: "1px solid rgba(255, 255, 255, 0.08)",
+                        boxShadow: "0 4px 18px rgba(0, 0, 0, 0.35)",
                     }}
                 >
-                    <img
-                        src="/emojis/train.png"
-                        alt="🚆"
-                        style={{ height: "1em", verticalAlign: "middle" }}
-                    />
-                    <img
-                        src="/emojis/portugal.png"
-                        alt="🇵🇹"
-                        style={{ height: "1em", verticalAlign: "middle" }}
-                    />
-                    <img
-                        src="/emojis/map.png"
-                        alt="🗺️"
-                        style={{ height: "1em", verticalAlign: "middle" }}
-                    />
-                    <img
-                        src="/emojis/compass.png"
-                        alt="🧭"
-                        style={{ height: "1em", verticalAlign: "middle" }}
-                    />
+                    <svg
+                        viewBox="0 0 24 24"
+                        width="22"
+                        height="22"
+                        aria-hidden="true"
+                        style={{ flexShrink: 0 }}
+                    >
+                        <path
+                            d="M6 3.5h12a2 2 0 0 1 2 2v9a3.5 3.5 0 0 1-3.5 3.5h-9A3.5 3.5 0 0 1 4 14.5v-9a2 2 0 0 1 2-2Zm0 3v3.5h12V6.5H6Zm0 5.5v2.5a1.5 1.5 0 0 0 1.5 1.5h9a1.5 1.5 0 0 0 1.5-1.5V12H6Zm1.75 1.75a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm8.5 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM8.5 19l-1.4 1.6a.6.6 0 0 0 .45 1H16.45a.6.6 0 0 0 .45-1L15.5 19h-7Z"
+                            fill="#0b6cf2"
+                        />
+                    </svg>
+                    <span
+                        style={{
+                            fontSize: "1.05rem",
+                            fontWeight: 600,
+                            letterSpacing: "0.02em",
+                            color: "#f4f7fb",
+                            fontFamily:
+                                "system-ui, -apple-system, 'Segoe UI', sans-serif",
+                            lineHeight: 1,
+                        }}
+                    >
+                        Comboios
+                    </span>
                 </div>
                 {/* {(vehicles ?? []).filter(
                     (v) => v.status === VehicleStatus.Cancelled
@@ -1352,6 +1393,9 @@ function Home() {
                 }}
                 cursor={cursor}
             >
+                {/* Dim overlay over the basemap — sits below every custom layer
+                    so trains, stations and rail lines stay at full opacity. */}
+                <Layer {...basemapDimStyle} />
                 {/* Rendered first so the rail geometry sits BELOW the
                     stations and vehicles. Heatmap ON → speed colouring;
                     heatmap OFF → subtle green dashed track outline. */}
@@ -1396,7 +1440,6 @@ function Home() {
                 >
                     <Layer {...vehiclesStatusLayerStyle}></Layer>
                     <Layer {...vehiclesIconLayerStyle}></Layer>
-                    <Layer {...vehiclesArrowLayerStyle}></Layer>
                 </Source>
 
             </WGLMap>

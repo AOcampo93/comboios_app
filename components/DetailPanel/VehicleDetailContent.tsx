@@ -82,6 +82,24 @@ export default function VehicleDetailContent({
                         minWidth: 0,
                     }}
                 >
+                    <div
+                        aria-hidden="true"
+                        style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 16,
+                            background: "#388344",
+                            color: "#fff",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flexShrink: 0,
+                            boxShadow:
+                                "0 1px 3px rgba(0,0,0,0.2), inset 0 0 0 1px rgba(255,255,255,0.15)",
+                        }}
+                    >
+                        <Train size={18} weight="fill" />
+                    </div>
                     <h1 style={{ fontWeight: 900, fontSize: "1.1rem" }}>
                         {t("vehicle_popup.train", {
                             trainNumber: vehicle.trainNumber,

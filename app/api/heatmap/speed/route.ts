@@ -72,8 +72,8 @@ export async function GET() {
                     ST_StartPoint(sp.geometry::geometry)::geography,
                     ST_EndPoint(sp.geometry::geometry)::geography
                 ) <= 50000
-                -- Density filter for shorter chords: drop sparse GPS traces
-                -- with < 0.5 vertices/km that draw as visual straight lines.
+                -- Density filter: drop sparse GPS traces with < 0.5
+                -- vertices/km over a chord > 5 km.
                 AND NOT (
                     ST_Distance(
                         ST_StartPoint(sp.geometry::geometry)::geography,
@@ -84,6 +84,28 @@ export async function GET() {
                             ST_StartPoint(sp.geometry::geometry)::geography,
                             ST_EndPoint(sp.geometry::geometry)::geography
                         ) / 1000.0) * 0.5
+                )
+                -- Straight-chord filter for short artefacts (3–50 km) that
+                -- slipped past the density cut: ratio path/chord ≤ 1.03 plus
+                -- density < 5 pts/km flags GPS traces that draw as a straight
+                -- diagonal over actual track curves. The density floor of 5
+                -- protects OSM-routed seed paths (dense by construction)
+                -- from being filtered for being legitimately straight.
+                AND NOT (
+                    ST_Distance(
+                        ST_StartPoint(sp.geometry::geometry)::geography,
+                        ST_EndPoint(sp.geometry::geometry)::geography
+                    ) > 3000
+                    AND ST_Length(sp.geometry)
+                        <= ST_Distance(
+                            ST_StartPoint(sp.geometry::geometry)::geography,
+                            ST_EndPoint(sp.geometry::geometry)::geography
+                        ) * 1.03
+                    AND ST_NumPoints(sp.geometry::geometry) <
+                        (ST_Distance(
+                            ST_StartPoint(sp.geometry::geometry)::geography,
+                            ST_EndPoint(sp.geometry::geometry)::geography
+                        ) / 1000.0) * 5
                 )
             `,
         );

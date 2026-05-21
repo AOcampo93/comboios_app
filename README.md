@@ -8,10 +8,14 @@ backend histórico propio (Backend B).
 
 ### En vivo (no requieren histórico)
 
-- **Heading del tren**: el icono apunta en la dirección real de movimiento,
-  calculado vía `turf.bearing` entre polls consecutivos. Una flecha blanca
-  (capa `vehicle-arrow`, halo oscuro) marca la dirección por delante del punto,
-  visible desde zoom 6.
+- **Heading del tren**: el icono orientado (`cp_vehicle_oriented_w_inv.png`)
+  apunta en la dirección real de movimiento, calculado en el cliente con dos
+  señales encadenadas: (1) `turf.bearing(prev_pos, curr_pos)` entre polls
+  consecutivos; (2) si esa señal no cambia (el upstream a veces replica la
+  misma posición varios polls seguidos) → fallback a
+  `turf.bearing(lastStation_pos, curr_pos)`. Resultado: las flechas aparecen
+  en el primer poll de cada tren IN_TRANSIT, no hace falta esperar al
+  movimiento. Visible desde zoom 8.
 - **ETA real por parada**: lista completa del trayecto en el panel de detalle
   con próxima parada destacada, paradas pasadas/futuras diferenciadas, ETA
   realtime + delay por parada.
@@ -32,8 +36,19 @@ backend histórico propio (Backend B).
   en mobile (vaul). Sustituye al popup de MapLibre y al bottom sheet anterior;
   seleccionar otra entidad reemplaza el contenido. `VehicleDetailContent` /
   `StationDetailContent` renderizan el cuerpo según el tipo seleccionado.
+  Cada uno tiene un badge circular con icono en el header — verde con `Train`
+  para vehículos, azul con `MapPinLine` para estaciones — coincidiendo con el
+  color de los puntos en el mapa.
+- **Header wordmark**: pill con blur (`backdrop-filter`) y SVG de tren +
+  texto "Comboios". Reemplaza la fila de cuatro emojis del fork original.
+- **Jerarquía visual**: una capa `background`-type negra al 45% se inserta
+  entre el basemap CARTO y las capas de datos. Atenúa el mapa de fondo sin
+  tocar trenes ni vías → trenes y selección leen como primer plano.
+- **Un solo indicador de dirección**: el PNG orientado del tren rota con el
+  heading. La capa SDF `vehicle-arrow` que duplicaba el cue se eliminó.
 - **Estaciones marcadas**: cada estación se dibuja como un punto azul pequeño
-  (`#0B6CF2`) desde zoom 7.
+  (`#0B6CF2`) desde zoom 7. Los marcadores rojos del modo heatmap se redujeron
+  a `circle-radius` 2-4.5 para no tapar a los trenes.
 
 ### PWA
 
@@ -58,7 +73,9 @@ backend histórico propio (Backend B).
   (rojo→amarillo→verde) y cada estación como marcador. La capa va por debajo de
   trenes y estaciones y es semitransparente; la leyenda muestra los rangos de
   km/h. Con el heatmap apagado las vías siguen resaltadas con una línea verde
-  punteada.
+  punteada. La **geometría es estática y proviene de OSM** (Overpass), poblada
+  por el script one-shot `seed-osm-geometry` del scraper; el aggregator ya no
+  toca `segment_paths`. Ver `CLAUDE.md` del scraper → "Static heatmap geometry".
 
 Endpoints en `app/api/`:
 
